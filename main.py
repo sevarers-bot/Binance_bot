@@ -24,9 +24,9 @@ def keep_alive():
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Kendi Token'ınızı girin
 CHAT_ID = "6593284503"          # Kendi Chat ID'nizi girin
 
-MIN_VOLUME_USDT = 10_000_000  
-THRESHOLD_HIGH = 70.0
-THRESHOLD_LOW = 30.0
+MIN_VOLUME_USDT = 5_000_000  
+THRESHOLD_HIGH = 60.0
+THRESHOLD_LOW = 40.0
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
