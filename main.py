@@ -21,8 +21,8 @@ def keep_alive():
     t.start()
 
 # ==================== KULLANICI AYARLARI ====================
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Kendi Token'ınızı girin
-CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"          # Kendi Chat ID'nizi girin
+TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Kendi Token'ınızı girin
+CHAT_ID = "6593284503"          # Kendi Chat ID'nizi girin
 
 MIN_VOLUME_USDT = 10_000_000  
 THRESHOLD_HIGH = 70.0
