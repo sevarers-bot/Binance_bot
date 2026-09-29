@@ -1,3 +1,4 @@
+import os
 import time
 import datetime
 import requests
@@ -6,27 +7,31 @@ import numpy as np
 from flask import Flask
 from threading import Thread
 
-# ==================== WEB SUNUCUSU (RENDER UYUMLULUĞU İÇİN) ====================
+# ==================== RENDER İÇİN SAHTE WEB SUNUCUSU ====================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot 7/24 Aktif Çalışıyor!"
+    return "Bot 7/24 Kesintisiz Çalışıyor!"
 
 def run_web_server():
-    app.run(host='0.0.0.0', port=8080)
+    # Render'ın atadığı dinamik PORT'u otomatik alır (Varsayılan: 10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run_web_server)
+    t.daemon = True
     t.start()
 
 # ==================== KULLANICI AYARLARI ====================
-TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Kendi Token'ınızı girin
-CHAT_ID = "6593284503"          # Kendi Chat ID'nizi girin
+TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Bot Token'ınız
+CHAT_ID = "6593284503"          # Chat ID'niz
 
-MIN_VOLUME_USDT = 5_000_000  
-THRESHOLD_HIGH = 60.0
-THRESHOLD_LOW = 40.0
+# Dahasık sinyal alabilmek için esnetilmiş test eşik değerleri:
+MIN_VOLUME_USDT = 5_000_000  # 5 Milyon $ üzeri hacim
+THRESHOLD_HIGH = 60.0        # %60 ve üzeri Long/Short oranı
+THRESHOLD_LOW = 40.0         # %40 ve altı Long/Short oranı
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -108,7 +113,7 @@ def get_long_short_ratio(symbol):
         url = f"{BINANCE_FUTURES_URL}/futures/data/topLongShortAccountRatio"
         params = {"symbol": symbol, "period": "5m", "limit": 1}
         res = requests.get(url, params=params, timeout=5).json()
-        if res:
+        if res and isinstance(res, list) and len(res) > 0:
             long_ratio = float(res[0]['longAccount']) * 100
             short_ratio = float(res[0]['shortAccount']) * 100
             return round(long_ratio, 2), round(short_ratio, 2)
@@ -119,9 +124,13 @@ def get_long_short_ratio(symbol):
 # ==================== TARAMA SÜRECİ ====================
 
 def run_scanner():
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Tarama başlatıldı...")
+    now_str = datetime.datetime.now().strftime('%H:%M:%S')
+    print(f"[{now_str}] Binance Taraması Başlatıldı...")
+    
     pairs = get_top_usdt_pairs()
+    print(f"Taranan Hacimli Çift Sayısı: {len(pairs)}")
 
+    match_count = 0
     for coin in pairs:
         symbol = coin['symbol']
         price = coin['price']
@@ -130,7 +139,9 @@ def run_scanner():
         long_pct, short_pct = get_long_short_ratio(symbol)
         funding_rate = get_funding_rate(symbol)
 
+        # OLASI SHORT KOŞULU
         if funding_rate > 0 and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
+            match_count += 1
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
 
@@ -149,7 +160,9 @@ def run_scanner():
             send_telegram_msg(msg)
             time.sleep(1)
 
+        # OLASI LONG KOŞULU
         elif funding_rate < 0 and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
+            match_count += 1
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
 
@@ -168,24 +181,27 @@ def run_scanner():
             send_telegram_msg(msg)
             time.sleep(1)
 
-def wait_for_next_5m_candle():
-    now = datetime.datetime.now()
-    next_minute = (now.minute // 5 + 1) * 5
-    if next_minute == 60:
-        next_time = now.replace(hour=(now.hour + 1) % 24, minute=0, second=2, microsecond=0)
-    else:
-        next_time = now.replace(minute=next_minute, second=2, microsecond=0)
-    
-    wait_seconds = (next_time - now).total_seconds()
-    time.sleep(wait_seconds)
+    print(f"[{now_str}] Tarama Bitti. Bulunan Sinyal Sayısı: {match_count}")
+
+# ==================== ANA DÖNGÜ ====================
 
 if __name__ == "__main__":
-    keep_alive()  # Sahte web sunucusunu başlatır
-    send_telegram_msg("🤖 *Binance Long/Short & Funding Rate Tarayıcı Başlatıldı!*")
+    keep_alive()
+    time.sleep(2)
+    send_telegram_msg("🤖 *Binance Long/Short & Funding Rate Tarayıcı Aktif!*")
+    
+    # Bot açılır açılmaz beklemeden İLK taramayı hemen yap
+    try:
+        run_scanner()
+    except Exception as e:
+        print(f"İlk Tarama Hatası: {e}")
+
+    # Ardından her 5 dakikada bir düzenli çalışmaya devam et
     while True:
         try:
-            wait_for_next_5m_candle()
+            # 300 saniye (5 dakika) bekle ve tara
+            time.sleep(300)
             run_scanner()
         except Exception as e:
-            print(f"Genel Hata: {e}")
+            print(f"Döngü Hatası: {e}")
             time.sleep(10)
