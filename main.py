@@ -7,7 +7,7 @@ import numpy as np
 from flask import Flask
 from threading import Thread
 
-# Print verilerinin loga anında düşmesini sağla
+# Logların Render paneline gecikmesiz, anında düşmesini sağlar
 sys.stdout.reconfigure(line_buffering=True)
 
 # ==================== RENDER İÇİN WEB SUNUCUSU ====================
@@ -18,6 +18,7 @@ def home():
     return "Bot 7/24 Kesintisiz Çalışıyor!"
 
 def run_web_server():
+    # Render'ın atadığı portu otomatik algılar (Varsayılan 10000)
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -27,13 +28,13 @@ def keep_alive():
     t.start()
 
 # ==================== KULLANICI AYARLARI ====================
-TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Token'ınız
-CHAT_ID = "6593284503"          # Chat ID'niz
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Telegram Bot Token'ınız
+CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"          # Telegram Chat ID'niz
 
-# Test için filtreleri iyice esnetiyoruz:
-MIN_VOLUME_USDT = 1_000_000   # 1 Milyon $ üzeri hacim (Daha çok coin taranır)
-THRESHOLD_HIGH = 55.0         # %55 Long veya Short (Sinyal ihtimalini artırır)
-THRESHOLD_LOW = 45.0          # %45 altı
+# Test ve hassasiyet eşikleri (Daha fazla sinyal için esnetilmiştir)
+MIN_VOLUME_USDT = 5_000_000   # 5 Milyon $ üzeri hacimli coinler taranır
+THRESHOLD_HIGH = 60.0         # %60 ve üzeri Long/Short oranı
+THRESHOLD_LOW = 40.0          # %40 ve altı Long/Short oranı
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -50,7 +51,7 @@ def send_telegram_msg(message):
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Telegram Hatası: {e}", flush=True)
+        print(f"Telegram Gönderim Hatası: {e}", flush=True)
 
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -77,8 +78,10 @@ def get_rsi(symbol, interval="5m"):
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/klines"
         params = {"symbol": symbol, "interval": interval, "limit": 50}
         res = requests.get(url, params=params, timeout=3).json()
-        close_prices = [float(k[4]) for k in res]
-        return calculate_rsi(close_prices, 14)
+        if isinstance(res, list):
+            close_prices = [float(k[4]) for k in res]
+            return calculate_rsi(close_prices, 14)
+        return 50.0
     except Exception:
         return 50.0
 
@@ -86,16 +89,23 @@ def get_top_usdt_pairs():
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr"
         res = requests.get(url, timeout=5).json()
+        
+        # Binance API hata yanıtı dönerse güvenli şekilde yakala
+        if not isinstance(res, list):
+            print(f"Binance API Yanıt Uyarısı: {res}", flush=True)
+            return []
+
         valid_pairs = []
         for coin in res:
-            symbol = coin['symbol']
-            volume = float(coin['quoteVolume'])
-            if symbol.endswith("USDT") and volume >= MIN_VOLUME_USDT:
-                valid_pairs.append({
-                    "symbol": symbol,
-                    "volume": volume,
-                    "price": float(coin['lastPrice'])
-                })
+            if isinstance(coin, dict) and 'symbol' in coin and 'quoteVolume' in coin:
+                symbol = coin['symbol']
+                volume = float(coin['quoteVolume'])
+                if symbol.endswith("USDT") and volume >= MIN_VOLUME_USDT:
+                    valid_pairs.append({
+                        "symbol": symbol,
+                        "volume": volume,
+                        "price": float(coin.get('lastPrice', 0))
+                    })
         return valid_pairs
     except Exception as e:
         print(f"Hacim Çekme Hatası: {e}", flush=True)
@@ -106,7 +116,9 @@ def get_funding_rate(symbol):
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
         params = {"symbol": symbol}
         res = requests.get(url, params=params, timeout=3).json()
-        return float(res['lastFundingRate']) * 100
+        if isinstance(res, dict) and 'lastFundingRate' in res:
+            return float(res['lastFundingRate']) * 100
+        return 0.0
     except Exception:
         return 0.0
 
@@ -115,9 +127,9 @@ def get_long_short_ratio(symbol):
         url = f"{BINANCE_FUTURES_URL}/futures/data/topLongShortAccountRatio"
         params = {"symbol": symbol, "period": "5m", "limit": 1}
         res = requests.get(url, params=params, timeout=3).json()
-        if res and isinstance(res, list) and len(res) > 0:
-            long_ratio = float(res[0]['longAccount']) * 100
-            short_ratio = float(res[0]['shortAccount']) * 100
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+            long_ratio = float(res[0].get('longAccount', 0.5)) * 100
+            short_ratio = float(res[0].get('shortAccount', 0.5)) * 100
             return round(long_ratio, 2), round(short_ratio, 2)
         return 50.0, 50.0
     except Exception:
@@ -127,10 +139,14 @@ def get_long_short_ratio(symbol):
 
 def run_scanner():
     now_str = datetime.datetime.now().strftime('%H:%M:%S')
-    print(f"[{now_str}] Taramaya Başlanıyor...", flush=True)
+    print(f"[{now_str}] Binance Taraması Başlatıldı...", flush=True)
     
     pairs = get_top_usdt_pairs()
-    print(f"[{now_str}] Toplam Taranacak Coin Sayısı: {len(pairs)}", flush=True)
+    print(f"[{now_str}] Taranacak Hacimli Coin Sayısı: {len(pairs)}", flush=True)
+
+    if not pairs:
+        print(f"[{now_str}] Taranacak coin bulunamadı veya API geçici yanıt vermedi.", flush=True)
+        return
 
     match_count = 0
     for i, coin in enumerate(pairs):
@@ -141,7 +157,7 @@ def run_scanner():
         long_pct, short_pct = get_long_short_ratio(symbol)
         funding_rate = get_funding_rate(symbol)
 
-        # OLASI SHORT KOŞULU (Funding > 0 ve Long Baskısı)
+        # OLASI SHORT KOŞULU
         if funding_rate > 0 and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
             match_count += 1
             rsi_5m = get_rsi(symbol, "5m")
@@ -154,15 +170,15 @@ def run_scanner():
                 f"📊 *24s Hacim:* `${volume_m:.2f}M`\n\n"
                 f"🟢 *Long Oranı:* `%{long_pct}`\n"
                 f"🔴 *Short Oranı:* `%{short_pct}`\n"
-                f"💸 *Funding Rate:* `%{funding_rate:.4f}`\n\n"
+                f"💸 *Funding Rate:* `%{funding_rate:.4f}` (Pozitif)\n\n"
                 f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
-                f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
+                f"🔗 [Binance Futures Grafik](https://www.binance.com/en/futures/{symbol})"
             )
             send_telegram_msg(msg)
-            print(f"-> Sinyal Bulundu: {symbol}", flush=True)
+            print(f"-> Sinyal Bulundu ({symbol})", flush=True)
             time.sleep(0.5)
 
-        # OLASI LONG KOŞULU (Funding < 0 ve Short Baskısı)
+        # OLASI LONG KOŞULU
         elif funding_rate < 0 and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
             match_count += 1
             rsi_5m = get_rsi(symbol, "5m")
@@ -175,19 +191,19 @@ def run_scanner():
                 f"📊 *24s Hacim:* `${volume_m:.2f}M`\n\n"
                 f"🔴 *Short Oranı:* `%{short_pct}`\n"
                 f"🟢 *Long Oranı:* `%{long_pct}`\n"
-                f"💸 *Funding Rate:* `%{funding_rate:.4f}`\n\n"
+                f"💸 *Funding Rate:* `%{funding_rate:.4f}` (Negatif)\n\n"
                 f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
-                f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
+                f"🔗 [Binance Futures Grafik](https://www.binance.com/en/futures/{symbol})"
             )
             send_telegram_msg(msg)
-            print(f"-> Sinyal Bulundu: {symbol}", flush=True)
+            print(f"-> Sinyal Bulundu ({symbol})", flush=True)
             time.sleep(0.5)
 
-        # Her 20 coin'de bir istek aşırı yüklemesini önlemek için kısa bekleme
-        if i % 20 == 0:
-            time.sleep(0.2)
+        # Rate-limit engeline takılmamak için her 10 coin'de bir çok kısa es ver
+        if i % 10 == 0:
+            time.sleep(0.1)
 
-    print(f"[{now_str}] Tarama Bitti. Toplam Sinyal: {match_count}", flush=True)
+    print(f"[{now_str}] Tarama Bitti. Bulunan Toplam Sinyal: {match_count}", flush=True)
 
 # ==================== ANA DÖNGÜ ====================
 
@@ -202,5 +218,5 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü İçi Hata: {e}", flush=True)
         
-        # 300 saniye (5 dakika) bekle
+        # 5 dakikada bir düzenli tarama yapar
         time.sleep(300)
