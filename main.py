@@ -3,15 +3,28 @@ import datetime
 import requests
 import pandas as pd
 import numpy as np
+from flask import Flask
+from threading import Thread
+
+# ==================== WEB SUNUCUSU (RENDER UYUMLULUĞU İÇİN) ====================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot 7/24 Aktif Çalışıyor!"
+
+def run_web_server():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_web_server)
+    t.start()
 
 # ==================== KULLANICI AYARLARI ====================
-TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token'ınız
-CHAT_ID = "6593284503"          # Telegram Chat ID'niz
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Kendi Token'ınızı girin
+CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"          # Kendi Chat ID'nizi girin
 
-# Taramada kullanılacak minimum 24 saatlik USDT hacmi (örneğin 10 Milyon USDT)
 MIN_VOLUME_USDT = 10_000_000  
-
-# Eşik Değerler (%70 / %30)
 THRESHOLD_HIGH = 70.0
 THRESHOLD_LOW = 30.0
 
@@ -20,7 +33,6 @@ BINANCE_FUTURES_URL = "https://fapi.binance.com"
 # ==================== YARDIMCI FONKSİYONLAR ====================
 
 def send_telegram_msg(message):
-    """Telegram'a mesaj gönderir."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -34,7 +46,6 @@ def send_telegram_msg(message):
         print(f"Telegram Gönderim Hatası: {e}")
 
 def calculate_rsi(prices, period=14):
-    """Fiyat listesinden RSI değerini hesaplar."""
     if len(prices) < period + 1:
         return 50.0
     deltas = np.diff(prices)
@@ -55,7 +66,6 @@ def calculate_rsi(prices, period=14):
     return 100.0 - (100.0 / (1 + rs))
 
 def get_rsi(symbol, interval="5m"):
-    """Binance'den klines çekerek RSI değerini hesaplar."""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/klines"
         params = {"symbol": symbol, "interval": interval, "limit": 100}
@@ -66,7 +76,6 @@ def get_rsi(symbol, interval="5m"):
         return 0.0
 
 def get_top_usdt_pairs():
-    """Hacmi MIN_VOLUME_USDT üzerinde olan tüm Vadeli USDT çiftlerini getirir."""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr"
         res = requests.get(url, timeout=10).json()
@@ -86,20 +95,15 @@ def get_top_usdt_pairs():
         return []
 
 def get_funding_rate(symbol):
-    """Anlık Funding Rate (Fonlama Oranı) getirir."""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
         params = {"symbol": symbol}
         res = requests.get(url, params=params, timeout=5).json()
-        return float(res['lastFundingRate']) * 100 # Yüzdelik cinsinden
+        return float(res['lastFundingRate']) * 100
     except Exception:
         return 0.0
 
 def get_long_short_ratio(symbol):
-    """
-    Binance Top Trader Long/Short Account Ratio verisini çeker.
-    Görseldeki Trader positioning / Market exposure verisidir.
-    """
     try:
         url = f"{BINANCE_FUTURES_URL}/futures/data/topLongShortAccountRatio"
         params = {"symbol": symbol, "period": "5m", "limit": 1}
@@ -117,21 +121,15 @@ def get_long_short_ratio(symbol):
 def run_scanner():
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Tarama başlatıldı...")
     pairs = get_top_usdt_pairs()
-    print(f"Filtrelenen Çift Sayısı: {len(pairs)}")
 
     for coin in pairs:
         symbol = coin['symbol']
         price = coin['price']
-        volume_m = coin['volume'] / 1_000_000 # Milyon $ cinsinden
+        volume_m = coin['volume'] / 1_000_000
 
-        # Long/Short Oranları
         long_pct, short_pct = get_long_short_ratio(symbol)
-        
-        # Funding Rate
         funding_rate = get_funding_rate(symbol)
 
-        # OLASI SHORT KOŞULU:
-        # Funding Rate > 0 VE Long >= %70 VE Short <= %30
         if funding_rate > 0 and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
@@ -149,10 +147,8 @@ def run_scanner():
                 f"🔗 [Binance Futures Grafik](https://www.binance.com/en/futures/{symbol})"
             )
             send_telegram_msg(msg)
-            time.sleep(1) # API Rate limit koruması
+            time.sleep(1)
 
-        # OLASI LONG KOŞULU:
-        # Funding Rate < 0 VE Short >= %70 VE Long <= %30
         elif funding_rate < 0 and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
@@ -172,10 +168,7 @@ def run_scanner():
             send_telegram_msg(msg)
             time.sleep(1)
 
-# ==================== 5 DAKİKALIK MUM KAPANIS TETİKLEYİCİSİ ====================
-
 def wait_for_next_5m_candle():
-    """Her 5 dakikalık mum kapanışına (00, 05, 10, 15... dakikalar) kadar bekler."""
     now = datetime.datetime.now()
     next_minute = (now.minute // 5 + 1) * 5
     if next_minute == 60:
@@ -184,10 +177,10 @@ def wait_for_next_5m_candle():
         next_time = now.replace(minute=next_minute, second=2, microsecond=0)
     
     wait_seconds = (next_time - now).total_seconds()
-    print(f"Sonraki 5dk mum kapanışına kadar bekleniyor ({int(wait_seconds)} saniye)...")
     time.sleep(wait_seconds)
 
 if __name__ == "__main__":
+    keep_alive()  # Sahte web sunucusunu başlatır
     send_telegram_msg("🤖 *Binance Long/Short & Funding Rate Tarayıcı Başlatıldı!*")
     while True:
         try:
