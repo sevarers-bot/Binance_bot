@@ -31,9 +31,9 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bo
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
 # Filtreleme Kriterleri:
-MIN_VOLUME_USDT = 2_000_000   # 2 Milyon $ üzeri tüm coinler taranır
-THRESHOLD_HIGH = 60.0         # %60 ve üzeri baskı oranı
-THRESHOLD_LOW = 40.0          # %40 ve altı baskı oranı
+MIN_VOLUME_USDT = 50_000_000   # 2 Milyon $ üzeri tüm coinler taranır
+THRESHOLD_HIGH = 70.0         # %60 ve üzeri baskı oranı
+THRESHOLD_LOW = 30.0          # %40 ve altı baskı oranı
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -206,7 +206,7 @@ def run_scanner():
 
 if __name__ == "__main__":
     keep_alive()
-    time.sleep(2)
+    time.sleep(600)
     send_telegram_msg("🤖 *Binance Kurallara Göre Tüm Piyasayı Tarayıcı Aktif!*")
     
     while True:
