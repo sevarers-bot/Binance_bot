@@ -28,8 +28,8 @@ def keep_alive():
     t.start()
 
 # ==================== KULLANICI AYARLARI ====================
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Telegram Bot Token'ınız
-CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"          # Telegram Chat ID'niz
+TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token'ınız
+CHAT_ID = "6593284503"          # Telegram Chat ID'niz
 
 # Test ve hassasiyet eşikleri (Daha fazla sinyal için esnetilmiştir)
 MIN_VOLUME_USDT = 5_000_000   # 5 Milyon $ üzeri hacimli coinler taranır
