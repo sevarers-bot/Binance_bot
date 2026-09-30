@@ -30,12 +30,12 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bo
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
 MIN_VOLUME_USDT = 50_000_000  # En az 50 Milyon $ 24s Hacim
-THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
-THRESHOLD_LOW = 30.0          # %30 ve altı baskı
+THRESHOLD_HIGH = 60.0         # %70 ve üzeri baskı
+THRESHOLD_LOW = 40.0          # %30 ve altı baskı
 
 # Funding Rate Filtreleri (Orijinal Ondalık Değerler)
-FUNDING_SHORT_MIN = 0.005     # Short için en az +0.005 (+%0.5)
-FUNDING_LONG_MAX = -0.005     # Long için en fazla -0.005 (-%0.5)
+FUNDING_SHORT_MIN = 0.001     # Short için en az +0.005 (+%0.5)
+FUNDING_LONG_MAX = -0.001     # Long için en fazla -0.005 (-%0.5)
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
