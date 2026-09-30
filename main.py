@@ -34,8 +34,8 @@ THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
 THRESHOLD_LOW = 30.0          # %30 ve altı baskı
 
 # Funding Rate Filtreleri
-FUNDING_SHORT_MIN = 0.005     # Short için en az +0.005 (+%0.5)
-FUNDING_LONG_MAX = -0.005     # Long için en fazla -0.005 (-%0.5)
+FUNDING_SHORT_MIN = 0.002     # Short için en az +0.005 (+%0.5)
+FUNDING_LONG_MAX = -0.002     # Long için en fazla -0.005 (-%0.5)
 
 # RSI Eşik Değerleri (Aşırı Ekstrem Seviyeler)
 RSI_SHORT_LIMIT = 80.0        # Short için RSI >= 80
