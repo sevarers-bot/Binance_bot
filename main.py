@@ -29,13 +29,17 @@ def keep_alive():
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
-MIN_VOLUME_USDT = 200_000_000 # En az 100 Milyon $ 24s Hacim
+MIN_VOLUME_USDT = 100_000_000 # En az 100 Milyon $ 24s Hacim
 THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
 THRESHOLD_LOW = 30.0          # %30 ve altı baskı
 
 # Funding Rate Filtreleri
 FUNDING_SHORT_MIN = 0.0000    # Short için Funding Rate >= 0.0000
 FUNDING_LONG_MAX = 0.0000     # Long için Funding Rate <= 0.0000
+
+# 5dk RSI Filtre Sınırları
+RSI_5M_SHORT_LIMIT = 75.0     # Short için 5dk RSI >= 75
+RSI_5M_LONG_LIMIT = 40.0      # Long için 5dk RSI <= 40
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -159,7 +163,7 @@ def get_long_short_ratio(symbol):
 def run_scanner():
     global previous_signals
     now_str = datetime.datetime.now().strftime('%H:%M:%S')
-    print(f"[{now_str}] Min Hacim: 100M$ | 10dk Döngü | Tarama Başlatıldı...", flush=True)
+    print(f"[{now_str}] Min Hacim: 100M$ | 5dk RSI (Short>=75, Long<=40) | Tarama Başlatıldı...", flush=True)
     
     pairs = get_all_usdt_pairs()
     print(f"[{now_str}] 100M$ Hacim Şartını Geçen Çift Sayısı: {len(pairs)}", flush=True)
@@ -186,16 +190,22 @@ def run_scanner():
 
         signal_type = None
 
-        # 1. SHORT SİNYALİ (Funding >= 0.0000 + Long >= %70)
+        # 1. SHORT SİNYALİ (Funding >= 0.0000 + Long >= %70 + 5dk RSI >= 75)
         if funding_rate >= FUNDING_SHORT_MIN and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
-            signal_type = "SHORT"
+            rsi_5m = get_rsi(symbol, "5m")
+            if rsi_5m >= RSI_5M_SHORT_LIMIT:
+                signal_type = "SHORT"
 
-        # 2. LONG SİNYALİ (Funding <= 0.0000 + Short >= %70)
+        # 2. LONG SİNYALİ (Funding <= 0.0000 + Short >= %70 + 5dk RSI <= 40)
         elif funding_rate <= FUNDING_LONG_MAX and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
-            signal_type = "LONG"
+            rsi_5m = get_rsi(symbol, "5m")
+            if rsi_5m <= RSI_5M_LONG_LIMIT:
+                signal_type = "LONG"
 
         if signal_type:
-            rsi_5m = get_rsi(symbol, "5m")
+            # Sinyal onaylandığında RSI ve OI bilgilerini tamamla
+            if signal_type == "SHORT":
+                rsi_5m = rsi_5m if 'rsi_5m' in locals() else get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
             oi_amount, oi_usdt = get_open_interest(symbol, price)
             oi_m = oi_usdt / 1_000_000
@@ -214,7 +224,7 @@ def run_scanner():
                 prev = previous_signals[symbol]
                 vol_str = f"`${prev['volume_m']:.2f}M` ➡️ `${volume_m:.2f}M`"
                 oi_str = f"`${prev['oi_m']:.2f}M` ➡️ `${oi_m:.2f}M`"
-                long_str = f"`%{prev['long_pct']}` ➡️ `%{long_pct}`"
+                long_str = f"`%{prev['long_pct']}` ➡️️ `%{long_pct}`"
                 short_str = f"`%{prev['short_pct']}` ➡️ `%{short_pct}`"
                 repeat_note = "🔄 *[TEKRARLAYAN SİNYAL - DEĞİŞİMLER]*\n\n"
             else:
@@ -254,7 +264,7 @@ def run_scanner():
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
-    send_telegram_msg("🤖 *10dk Periyotlu & Karşılaştırmalı Tarayıcı Aktif!*")
+    send_telegram_msg("🤖 *5dk RSI Destekli Tarayıcı Aktif!*")
     
     while True:
         try:
