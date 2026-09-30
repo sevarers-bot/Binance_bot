@@ -26,8 +26,8 @@ def keep_alive():
     t.start()
 
 # ==================== KULLANICI AYARLARI ====================
-TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token
-CHAT_ID = "6593284503"          # Telegram Chat ID
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Telegram Bot Token
+CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"          # Telegram Chat ID
 
 MIN_VOLUME_USDT = 100_000_000 # En az 100 Milyon $ 24s Hacim
 THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
@@ -187,7 +187,7 @@ def run_scanner():
             match_count += 1
             
             msg = (
-                f"🚨 *YÜKSEK LONG BASKISI (SHORT SİNYALİ)*\n\n"
+                f"🔴 🔻 *SHORT SİNYALİ* 🔻 🔴\n\n"
                 f"🪙 *Sembol:* #{symbol}\n"
                 f"💵 *Fiyat:* `{price}`\n"
                 f"📊 *24s Hacim:* `${volume_m:.2f}M`\n"
@@ -210,7 +210,7 @@ def run_scanner():
             match_count += 1
             
             msg = (
-                f"🚨 *YÜKSEK SHORT BASKISI (LONG SİNYALİ)*\n\n"
+                f"🟢 🔺 *LONG SİNYALİ* 🔺 🟢\n\n"
                 f"🪙 *Sembol:* #{symbol}\n"
                 f"💵 *Fiyat:* `{price}`\n"
                 f"📊 *24s Hacim:* `${volume_m:.2f}M`\n"
