@@ -29,13 +29,13 @@ def keep_alive():
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
-MIN_VOLUME_USDT = 100_000_000  # En az 50 Milyon $ 24s Hacim
+MIN_VOLUME_USDT = 100_000_000 # En az 100 Milyon $ 24s Hacim
 THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
 THRESHOLD_LOW = 30.0          # %30 ve altı baskı
 
-# Funding Rate Filtreleri (Orijinal Ondalık Değerler)
-FUNDING_SHORT_MIN = 0.0000     # Short için en az +0.005 (+%0.5)
-FUNDING_LONG_MAX = -0.0000     # Long için en fazla -0.005 (-%0.5)
+# Funding Rate Filtreleri
+FUNDING_SHORT_MIN = 0.0000    # Short için Funding Rate >= 0.0000
+FUNDING_LONG_MAX = 0.0000     # Long için Funding Rate <= 0.0000
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -86,6 +86,19 @@ def get_rsi(symbol, interval="5m"):
     except Exception:
         return 50.0
 
+def get_open_interest(symbol, price):
+    try:
+        url = f"{BINANCE_FUTURES_URL}/fapi/v1/openInterest"
+        params = {"symbol": symbol}
+        res = requests.get(url, params=params, timeout=3).json()
+        if isinstance(res, dict) and 'openInterest' in res:
+            oi_amount = float(res['openInterest'])
+            oi_usdt = oi_amount * price
+            return oi_amount, oi_usdt
+        return 0.0, 0.0
+    except Exception:
+        return 0.0, 0.0
+
 def get_all_usdt_pairs():
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr"
@@ -115,7 +128,6 @@ def get_all_usdt_pairs():
         return []
 
 def get_funding_info(symbol):
-    """Funding oranını ham (ondalık) değer olarak döndürür."""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
         params = {"symbol": symbol}
@@ -143,10 +155,10 @@ def get_long_short_ratio(symbol):
 
 def run_scanner():
     now_str = datetime.datetime.now().strftime('%H:%M:%S')
-    print(f"[{now_str}] Yeni Filtrelerle Tarama Başlatıldı...", flush=True)
+    print(f"[{now_str}] Min Hacim: 100M$ | FR=0.0000 | Tarama Başlatıldı...", flush=True)
     
     pairs = get_all_usdt_pairs()
-    print(f"[{now_str}] Hacim Şartını Geçen Çift Sayısı: {len(pairs)}", flush=True)
+    print(f"[{now_str}] 100M$ Hacim Şartını Geçen Çift Sayısı: {len(pairs)}", flush=True)
 
     if not pairs:
         return
@@ -161,52 +173,56 @@ def run_scanner():
         volume_m = coin['volume'] / 1_000_000
 
         time.sleep(0.15)
-        funding_rate = get_funding_info(symbol)  # Örn: 0.005 veya -0.005
+        funding_rate = get_funding_info(symbol)
 
         time.sleep(0.1)
         long_pct, short_pct = get_long_short_ratio(symbol)
 
-        # 1. SHORT SİNYALİ (Funding >= 0.005)
+        # 1. SHORT SİNYALİ (Funding >= 0.0000 + Long >= %70)
         if funding_rate >= FUNDING_SHORT_MIN and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
+            oi_amount, oi_usdt = get_open_interest(symbol, price)
+            oi_m = oi_usdt / 1_000_000
+            match_count += 1
+            
+            msg = (
+                f"🚨 *YÜKSEK LONG BASKISI (SHORT SİNYALİ)*\n\n"
+                f"🪙 *Sembol:* #{symbol}\n"
+                f"💵 *Fiyat:* `{price}`\n"
+                f"📊 *24s Hacim:* `${volume_m:.2f}M`\n"
+                f"🔓 *Open Interest:* `${oi_m:.2f}M` ({oi_amount:,.0f} Kontrat)\n\n"
+                f"🟢 *Long Oranı:* `%{long_pct}`\n"
+                f"🔴 *Short Oranı:* `%{short_pct}`\n"
+                f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.4f})\n\n"
+                f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
+                f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
+            )
+            send_telegram_msg(msg)
+            print(f"-> SİNYAL (SHORT): {symbol}", flush=True)
 
-            if rsi_5m >= 65 or rsi_1h >= 65:
-                match_count += 1
-                msg = (
-                    f"🚨 *YÜKSEK KALİTELİ SHORT SİNYALİ*\n\n"
-                    f"🪙 *Sembol:* #{symbol}\n"
-                    f"💵 *Fiyat:* `{price}`\n"
-                    f"📊 *24s Hacim:* `${volume_m:.2f}M`\n\n"
-                    f"🟢 *Long Oranı:* `%{long_pct}`\n"
-                    f"🔴 *Short Oranı:* `%{short_pct}`\n"
-                    f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.2f})\n\n"
-                    f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
-                    f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
-                )
-                send_telegram_msg(msg)
-                print(f"-> VIP SİNYAL (SHORT): {symbol}", flush=True)
-
-        # 2. LONG SİNYALİ (Funding <= -0.005)
+        # 2. LONG SİNYALİ (Funding <= 0.0000 + Short >= %70)
         elif funding_rate <= FUNDING_LONG_MAX and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
-
-            if rsi_5m <= 35 or rsi_1h <= 35:
-                match_count += 1
-                msg = (
-                    f"🚨 *YÜKSEK KALİTELİ LONG SİNYALİ*\n\n"
-                    f"🪙 *Sembol:* #{symbol}\n"
-                    f"💵 *Fiyat:* `{price}`\n"
-                    f"📊 *24s Hacim:* `${volume_m:.2f}M`\n\n"
-                    f"🔴 *Short Oranı:* `%{short_pct}`\n"
-                    f"🟢 *Long Oranı:* `%{long_pct}`\n"
-                    f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.2f})\n\n"
-                    f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
-                    f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
-                )
-                send_telegram_msg(msg)
-                print(f"-> VIP SİNYAL (LONG): {symbol}", flush=True)
+            oi_amount, oi_usdt = get_open_interest(symbol, price)
+            oi_m = oi_usdt / 1_000_000
+            match_count += 1
+            
+            msg = (
+                f"🚨 *YÜKSEK SHORT BASKISI (LONG SİNYALİ)*\n\n"
+                f"🪙 *Sembol:* #{symbol}\n"
+                f"💵 *Fiyat:* `{price}`\n"
+                f"📊 *24s Hacim:* `${volume_m:.2f}M`\n"
+                f"🔓 *Open Interest:* `${oi_m:.2f}M` ({oi_amount:,.0f} Kontrat)\n\n"
+                f"🔴 *Short Oranı:* `%{short_pct}`\n"
+                f"🟢 *Long Oranı:* `%{long_pct}`\n"
+                f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.4f})\n\n"
+                f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
+                f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
+            )
+            send_telegram_msg(msg)
+            print(f"-> SİNYAL (LONG): {symbol}", flush=True)
 
     print(f"[{now_str}] Tarama Bitti. Bulunan Sinyal Sayısı: {match_count}", flush=True)
 
@@ -215,7 +231,7 @@ def run_scanner():
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
-    send_telegram_msg("🤖 *Binance Tarayıcısı Yeni Güncelleme ile Aktif!*")
+    send_telegram_msg("🤖 *100M$ Hacim Destekli Tarayıcı Aktif!*")
     
     while True:
         try:
