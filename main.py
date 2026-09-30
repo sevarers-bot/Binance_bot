@@ -29,7 +29,7 @@ def keep_alive():
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
-MIN_VOLUME_USDT = 100_000_000 # En az 100 Milyon $ 24s Hacim
+MIN_VOLUME_USDT = 200_000_000 # En az 100 Milyon $ 24s Hacim
 THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
 THRESHOLD_LOW = 30.0          # %30 ve altı baskı
 
@@ -38,6 +38,9 @@ FUNDING_SHORT_MIN = 0.0000    # Short için Funding Rate >= 0.0000
 FUNDING_LONG_MAX = 0.0000     # Long için Funding Rate <= 0.0000
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
+
+# Önceki tarama sonuçlarını tutacak hafıza
+previous_signals = {}
 
 # ==================== YARDIMCI FONKSİYONLAR ====================
 
@@ -154,8 +157,9 @@ def get_long_short_ratio(symbol):
 # ==================== TARAMA SÜRECİ ====================
 
 def run_scanner():
+    global previous_signals
     now_str = datetime.datetime.now().strftime('%H:%M:%S')
-    print(f"[{now_str}] Min Hacim: 100M$ | FR=0.0000 | Tarama Başlatıldı...", flush=True)
+    print(f"[{now_str}] Min Hacim: 100M$ | 10dk Döngü | Tarama Başlatıldı...", flush=True)
     
     pairs = get_all_usdt_pairs()
     print(f"[{now_str}] 100M$ Hacim Şartını Geçen Çift Sayısı: {len(pairs)}", flush=True)
@@ -163,7 +167,9 @@ def run_scanner():
     if not pairs:
         return
 
+    current_signals = {}
     match_count = 0
+
     for coin in pairs:
         if coin['volume'] < MIN_VOLUME_USDT:
             continue
@@ -178,52 +184,69 @@ def run_scanner():
         time.sleep(0.1)
         long_pct, short_pct = get_long_short_ratio(symbol)
 
+        signal_type = None
+
         # 1. SHORT SİNYALİ (Funding >= 0.0000 + Long >= %70)
         if funding_rate >= FUNDING_SHORT_MIN and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
-            rsi_5m = get_rsi(symbol, "5m")
-            rsi_1h = get_rsi(symbol, "1h")
-            oi_amount, oi_usdt = get_open_interest(symbol, price)
-            oi_m = oi_usdt / 1_000_000
-            match_count += 1
-            
-            msg = (
-                f"🔴 🔻 *SHORT SİNYALİ* 🔻 🔴\n\n"
-                f"🪙 *Sembol:* #{symbol}\n"
-                f"💵 *Fiyat:* `{price}`\n"
-                f"📊 *24s Hacim:* `${volume_m:.2f}M`\n"
-                f"🔓 *Open Interest:* `${oi_m:.2f}M` ({oi_amount:,.0f} Kontrat)\n\n"
-                f"🟢 *Long Oranı:* `%{long_pct}`\n"
-                f"🔴 *Short Oranı:* `%{short_pct}`\n"
-                f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.4f})\n\n"
-                f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
-                f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
-            )
-            send_telegram_msg(msg)
-            print(f"-> SİNYAL (SHORT): {symbol}", flush=True)
+            signal_type = "SHORT"
 
         # 2. LONG SİNYALİ (Funding <= 0.0000 + Short >= %70)
         elif funding_rate <= FUNDING_LONG_MAX and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
+            signal_type = "LONG"
+
+        if signal_type:
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
             oi_amount, oi_usdt = get_open_interest(symbol, price)
             oi_m = oi_usdt / 1_000_000
             match_count += 1
-            
+
+            # Mevcut değerleri kaydet
+            current_signals[symbol] = {
+                "volume_m": volume_m,
+                "oi_m": oi_m,
+                "long_pct": long_pct,
+                "short_pct": short_pct
+            }
+
+            # Önceki veriler var mı kontrol et
+            if symbol in previous_signals:
+                prev = previous_signals[symbol]
+                vol_str = f"`${prev['volume_m']:.2f}M` ➡️ `${volume_m:.2f}M`"
+                oi_str = f"`${prev['oi_m']:.2f}M` ➡️ `${oi_m:.2f}M`"
+                long_str = f"`%{prev['long_pct']}` ➡️ `%{long_pct}`"
+                short_str = f"`%{prev['short_pct']}` ➡️ `%{short_pct}`"
+                repeat_note = "🔄 *[TEKRARLAYAN SİNYAL - DEĞİŞİMLER]*\n\n"
+            else:
+                vol_str = f"`${volume_m:.2f}M`"
+                oi_str = f"`${oi_m:.2f}M`"
+                long_str = f"`%{long_pct}`"
+                short_str = f"`%{short_pct}`"
+                repeat_note = ""
+
+            if signal_type == "SHORT":
+                header = "🔴 🔻 *SHORT SİNYALİ* 🔻 🔴"
+            else:
+                header = "🟢 🔺 *LONG SİNYALİ* 🔺 🟢"
+
             msg = (
-                f"🟢 🔺 *LONG SİNYALİ* 🔺 🟢\n\n"
+                f"{header}\n\n"
+                f"{repeat_note}"
                 f"🪙 *Sembol:* #{symbol}\n"
                 f"💵 *Fiyat:* `{price}`\n"
-                f"📊 *24s Hacim:* `${volume_m:.2f}M`\n"
-                f"🔓 *Open Interest:* `${oi_m:.2f}M` ({oi_amount:,.0f} Kontrat)\n\n"
-                f"🔴 *Short Oranı:* `%{short_pct}`\n"
-                f"🟢 *Long Oranı:* `%{long_pct}`\n"
+                f"📊 *24s Hacim:* {vol_str}\n"
+                f"🔓 *Open Interest:* {oi_str} ({oi_amount:,.0f} Kontrat)\n\n"
+                f"🟢 *Long Oranı:* {long_str}\n"
+                f"🔴 *Short Oranı:* {short_str}\n"
                 f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.4f})\n\n"
                 f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
                 f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
             )
             send_telegram_msg(msg)
-            print(f"-> SİNYAL (LONG): {symbol}", flush=True)
+            print(f"-> SİNYAL ({signal_type}): {symbol}", flush=True)
 
+    # Önceki hafızayı güncelle
+    previous_signals = current_signals
     print(f"[{now_str}] Tarama Bitti. Bulunan Sinyal Sayısı: {match_count}", flush=True)
 
 # ==================== ANA DÖNGÜ ====================
@@ -231,7 +254,7 @@ def run_scanner():
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
-    send_telegram_msg("🤖 *100M$ Hacim Destekli Tarayıcı Aktif!*")
+    send_telegram_msg("🤖 *10dk Periyotlu & Karşılaştırmalı Tarayıcı Aktif!*")
     
     while True:
         try:
@@ -239,4 +262,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
         
-        time.sleep(300)
+        time.sleep(600)  # 10 dakikada bir çalışır (600 saniye)
