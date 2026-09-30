@@ -14,7 +14,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot Sıkı Filtrelerle 7/24 Aktif!"
+    return "Bot Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -29,12 +29,13 @@ def keep_alive():
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
-# Sıkılaştırılmış Filtre Eşikleri
 MIN_VOLUME_USDT = 50_000_000  # En az 50 Milyon $ 24s Hacim
-THRESHOLD_HIGH = 70.0         # %70 ve üzeri aşırı baskı
+THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
 THRESHOLD_LOW = 30.0          # %30 ve altı baskı
-MIN_FUNDING_ABS = 0.5         # En az %0.5 veya -%0.5 Funding Rate (0.5 altı elenir)
-MAX_FUNDING_MINUTES = 60      # Funding sayacı 60 dakikanın (1 saatin) altında olmalı
+
+# Funding Rate Filtreleri (Orijinal Ondalık Değerler)
+FUNDING_SHORT_MIN = 0.005     # Short için en az +0.005 (+%0.5)
+FUNDING_LONG_MAX = -0.005     # Long için en fazla -0.005 (-%0.5)
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -114,22 +115,16 @@ def get_all_usdt_pairs():
         return []
 
 def get_funding_info(symbol):
-    """Funding oranını (% cinsinden) ve sonraki ödemeye kalan süreyi (dakika) döndürür."""
+    """Funding oranını ham (ondalık) değer olarak döndürür."""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
         params = {"symbol": symbol}
         res = requests.get(url, params=params, timeout=3).json()
-        if isinstance(res, dict) and 'lastFundingRate' in res and 'nextFundingTime' in res:
-            rate = float(res['lastFundingRate']) * 100
-            next_time_ms = int(res['nextFundingTime'])
-            now_ms = int(time.time() * 1000)
-            
-            remaining_seconds = max(0, (next_time_ms - now_ms) / 1000)
-            remaining_minutes = remaining_seconds / 60
-            return rate, round(remaining_minutes, 1)
-        return 0.0, 999.0
+        if isinstance(res, dict) and 'lastFundingRate' in res:
+            return float(res['lastFundingRate'])
+        return 0.0
     except Exception:
-        return 0.0, 999.0
+        return 0.0
 
 def get_long_short_ratio(symbol):
     try:
@@ -148,18 +143,16 @@ def get_long_short_ratio(symbol):
 
 def run_scanner():
     now_str = datetime.datetime.now().strftime('%H:%M:%S')
-    print(f"[{now_str}] Filtreli Tarama Başlatıldı...", flush=True)
+    print(f"[{now_str}] Yeni Filtrelerle Tarama Başlatıldı...", flush=True)
     
     pairs = get_all_usdt_pairs()
     print(f"[{now_str}] Hacim Şartını Geçen Çift Sayısı: {len(pairs)}", flush=True)
 
     if not pairs:
-        print(f"[{now_str}] Uygun coin bulunamadı veya API yanıt vermedi.", flush=True)
         return
 
     match_count = 0
     for coin in pairs:
-        # Çift Katmanlı Hacim Kontrolü
         if coin['volume'] < MIN_VOLUME_USDT:
             continue
 
@@ -167,26 +160,17 @@ def run_scanner():
         price = coin['price']
         volume_m = coin['volume'] / 1_000_000
 
-        time.sleep(0.2)
-        funding_rate, funding_mins = get_funding_info(symbol)
-
-        # 1. KONTROL: Funding Rate Mutlak Değeri >= %0.5 olmalı (0.5 altı elenir)
-        if abs(funding_rate) < MIN_FUNDING_ABS:
-            continue
-
-        # 2. KONTROL: Funding sayacı 60 dakikanın altında olmalı
-        if funding_mins > MAX_FUNDING_MINUTES:
-            continue
+        time.sleep(0.15)
+        funding_rate = get_funding_info(symbol)  # Örn: 0.005 veya -0.005
 
         time.sleep(0.1)
         long_pct, short_pct = get_long_short_ratio(symbol)
 
-        # 3. KONTROL & SİNYAL: EKSTREM SHORT
-        if funding_rate >= MIN_FUNDING_ABS and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
+        # 1. SHORT SİNYALİ (Funding >= 0.005)
+        if funding_rate >= FUNDING_SHORT_MIN and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
 
-            # 4. KONTROL: RSI Filtresi (Short için aşırı alım bölgesi)
             if rsi_5m >= 65 or rsi_1h >= 65:
                 match_count += 1
                 msg = (
@@ -196,20 +180,18 @@ def run_scanner():
                     f"📊 *24s Hacim:* `${volume_m:.2f}M`\n\n"
                     f"🟢 *Long Oranı:* `%{long_pct}`\n"
                     f"🔴 *Short Oranı:* `%{short_pct}`\n"
-                    f"💸 *Funding Rate:* `%{funding_rate:.4f}`\n"
-                    f"⏳ *Funding Kalan Süre:* `{funding_mins:.0f} Dk` (1 saatin altında)\n\n"
+                    f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.2f})\n\n"
                     f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
                     f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
                 )
                 send_telegram_msg(msg)
                 print(f"-> VIP SİNYAL (SHORT): {symbol}", flush=True)
 
-        # 3. KONTROL & SİNYAL: EKSTREM LONG
-        elif funding_rate <= -MIN_FUNDING_ABS and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
+        # 2. LONG SİNYALİ (Funding <= -0.005)
+        elif funding_rate <= FUNDING_LONG_MAX and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
             rsi_5m = get_rsi(symbol, "5m")
             rsi_1h = get_rsi(symbol, "1h")
 
-            # 4. KONTROL: RSI Filtresi (Long için aşırı satım bölgesi)
             if rsi_5m <= 35 or rsi_1h <= 35:
                 match_count += 1
                 msg = (
@@ -219,22 +201,21 @@ def run_scanner():
                     f"📊 *24s Hacim:* `${volume_m:.2f}M`\n\n"
                     f"🔴 *Short Oranı:* `%{short_pct}`\n"
                     f"🟢 *Long Oranı:* `%{long_pct}`\n"
-                    f"💸 *Funding Rate:* `%{funding_rate:.4f}`\n"
-                    f"⏳ *Funding Kalan Süre:* `{funding_mins:.0f} Dk` (1 saatin altında)\n\n"
+                    f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.2f})\n\n"
                     f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
                     f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
                 )
                 send_telegram_msg(msg)
                 print(f"-> VIP SİNYAL (LONG): {symbol}", flush=True)
 
-    print(f"[{now_str}] Tarama Bitti. Bulunan Sıkı Sinyal Sayısı: {match_count}", flush=True)
+    print(f"[{now_str}] Tarama Bitti. Bulunan Sinyal Sayısı: {match_count}", flush=True)
 
 # ==================== ANA DÖNGÜ ====================
 
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
-    send_telegram_msg("🤖 *VIP Filtreli Binance Tarayıcısı Aktif!*")
+    send_telegram_msg("🤖 *Binance Tarayıcısı Yeni Güncelleme ile Aktif!*")
     
     while True:
         try:
@@ -242,5 +223,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
         
-        # 5 dakikada bir tarar
         time.sleep(300)
