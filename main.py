@@ -26,8 +26,8 @@ def keep_alive():
     t.start()
 
 # ==================== KULLANICI AYARLARI ====================
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # Telegram Bot Token
-CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"          # Telegram Chat ID
+TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token
+CHAT_ID = "6593284503"          # Telegram Chat ID
 
 MIN_VOLUME_USDT = 100_000_000 # En az 100 Milyon $ 24s Hacim
 THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
