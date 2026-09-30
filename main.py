@@ -38,8 +38,8 @@ FUNDING_SHORT_MIN = 0.002     # Short için en az +0.005 (+%0.5)
 FUNDING_LONG_MAX = -0.002     # Long için en fazla -0.005 (-%0.5)
 
 # RSI Eşik Değerleri (Aşırı Ekstrem Seviyeler)
-RSI_SHORT_LIMIT = 80.0        # Short için RSI >= 80
-RSI_LONG_LIMIT = 20.0         # Long için RSI <= 20
+RSI_SHORT_LIMIT = 75.0        # Short için RSI >= 80
+RSI_LONG_LIMIT = 30.0         # Long için RSI <= 20
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
