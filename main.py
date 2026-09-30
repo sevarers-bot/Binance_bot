@@ -34,8 +34,8 @@ THRESHOLD_HIGH = 60.0         # %70 ve üzeri baskı
 THRESHOLD_LOW = 40.0          # %30 ve altı baskı
 
 # Funding Rate Filtreleri (Orijinal Ondalık Değerler)
-FUNDING_SHORT_MIN = 0.001     # Short için en az +0.005 (+%0.5)
-FUNDING_LONG_MAX = -0.001     # Long için en fazla -0.005 (-%0.5)
+FUNDING_SHORT_MIN = 0.000     # Short için en az +0.005 (+%0.5)
+FUNDING_LONG_MAX = -0.000     # Long için en fazla -0.005 (-%0.5)
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
