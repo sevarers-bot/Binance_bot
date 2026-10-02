@@ -30,11 +30,11 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bo
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
 # MANUEL HACİM VE ZAMAN DİLİMİ AYARLARI
-VOLUME_INTERVAL = "1h"       # Hacim kontrolü yapılacak zaman dilimi ("5m", "15m", "1h", "4h")
-VOLUME_MULTIPLIER = 3.0       # Normal hacminin kaç katı olsun? (4.0 = 4 Katı)
+VOLUME_INTERVAL = "15m"       # Hacim kontrolü yapılacak zaman dilimi ("5m", "15m", "1h", "4h")
+VOLUME_MULTIPLIER = 4.0       # Normal hacminin kaç katı olsun? (4.0 = 4 Katı)
 LOOKBACK_PERIOD = 20          # Ortalaması alınacak geçmiş mum sayısı
 
-MIN_24H_VOLUME_USDT = 1_000_000  # Çok hacimsiz/likiditesiz coinleri elemek için (24s min 20M$)
+MIN_24H_VOLUME_USDT = 10_000_000  # 24s min 20M$ hacim şartı
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -85,10 +85,10 @@ def get_all_usdt_pairs():
         print(f"Sembol Çekme Hatası: {e}", flush=True)
         return []
 
-def check_volume_spike(symbol, interval, multiplier, lookback):
+def check_volume_spike_and_breakdown(symbol, interval, multiplier, lookback):
     """
-    Seçilen zaman diliminde son tamamlanan/mevcut mumun hacmini 
-    geçmiş mumların ortalamasıyla kıyaslar.
+    Seçilen zaman diliminde hacim patlamasını kontrol eder ve 
+    mevcut mumun Long (Alış / Yeşil) ve Short (Satış / Kırmızı) hacim dağılımını hesaplar.
     """
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/klines"
@@ -97,22 +97,35 @@ def check_volume_spike(symbol, interval, multiplier, lookback):
         
         if isinstance(res, list) and len(res) >= lookback:
             # Kline verisi: [open_time, open, high, low, close, volume, close_time, quote_asset_volume, ...]
-            # Hacim hesabı için USDT hacmi (quote_asset_volume -> index 7) kullanıyoruz.
-            volumes = [float(k[7]) for k in res]
+            volumes = [float(k[7]) for k in res] # USDT Hacmi
             
-            current_volume = volumes[-1]  # Şu anki açık olan mumun hacmi
+            current_kline = res[-1]
+            open_price = float(current_kline[1])
+            close_price = float(current_kline[4])
+            current_volume = volumes[-1]  # Şu anki mumun toplam hacmi
+            
             past_volumes = volumes[:-1]   # Geçmiş N adet mumun hacmi
-            
             avg_volume = sum(past_volumes) / len(past_volumes)
             
             if avg_volume > 0:
                 ratio = current_volume / avg_volume
                 if ratio >= multiplier:
-                    return True, current_volume, avg_volume, ratio
+                    # Yeşil (Long) / Kırmızı (Short) Hacim Ayrıştırma
+                    # Binance varsayılan kline verisinde mum yönüne göre ana hacim dağılımı:
+                    if close_price > open_price:
+                        # Yeşil Mum -> Hacmin ağırlığı Long (Alış)
+                        long_vol = current_volume
+                        short_vol = 0.0
+                    else:
+                        # Kırmızı Mum -> Hacmin ağırlığı Short (Satış)
+                        long_vol = 0.0
+                        short_vol = current_volume
+
+                    return True, current_volume, avg_volume, ratio, long_vol, short_vol
                     
-        return False, 0.0, 0.0, 0.0
+        return False, 0.0, 0.0, 0.0, 0.0, 0.0
     except Exception:
-        return False, 0.0, 0.0, 0.0
+        return False, 0.0, 0.0, 0.0, 0.0, 0.0
 
 def get_funding_info(symbol):
     """Funding Rate çeker"""
@@ -160,8 +173,8 @@ def run_scanner():
 
         time.sleep(0.1)  # API rate limit koruması
         
-        # Hacim Kontrolü
-        is_spike, current_vol, avg_vol, ratio = check_volume_spike(
+        # Hacim Kontrolü ve Detayları
+        is_spike, current_vol, avg_vol, ratio, long_vol, short_vol = check_volume_spike_and_breakdown(
             symbol, 
             VOLUME_INTERVAL, 
             VOLUME_MULTIPLIER, 
@@ -174,22 +187,30 @@ def run_scanner():
             
             current_vol_m = current_vol / 1_000_000
             avg_vol_m = avg_vol / 1_000_000
+            long_vol_m = long_vol / 1_000_000
+            short_vol_m = short_vol / 1_000_000
             oi_m = oi_usdt / 1_000_000
             match_count += 1
 
+            # Mum Rengini Belirleme
+            candle_type = "🟢 LONG (MUM YEŞİL)" if long_vol > 0 else "🔴 SHORT (MUM KIRMIZI)"
+
             msg = (
-                f"🔥 *HACİM PATLAMASI SİNYALİ ({VOLUME_INTERVAL})*\n\n"
+                f"🔥 *HACİM PATLAMASI SİNYALİ ({VOLUME_INTERVAL})*\n"
+                f"Yön: *{candle_type}*\n\n"
                 f"🪙 *Sembol:* #{symbol}\n"
                 f"💵 *Fiyat:* `{price}`\n\n"
                 f"⚡ *Hacim Artışı:* `{ratio:.2f} Kat` ({VOLUME_MULTIPLIER}x Üzeri)\n"
-                f"📊 *Mevcut ({VOLUME_INTERVAL}) Hacim:* `${current_vol_m:.2f}M`\n"
+                f"📊 *Mevcut ({VOLUME_INTERVAL}) Toplam Hacim:* `${current_vol_m:.2f}M`\n"
+                f"🟢 *Long (Alış / Yeşil) Hacim:* `${long_vol_m:.2f}M`\n"
+                f"🔴 *Short (Satış / Kırmızı) Hacim:* `${short_vol_m:.2f}M`\n"
                 f"📈 *Ortalama Hacim:* `${avg_vol_m:.2f}M`\n\n"
                 f"🔓 *Open Interest:* `${oi_m:.2f}M` ({oi_amount:,.0f} Kontrat)\n"
                 f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.4f})\n\n"
                 f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
             )
             send_telegram_msg(msg)
-            print(f"-> SİNYAL: {symbol} ({ratio:.1f}x Hacim)", flush=True)
+            print(f"-> SİNYAL: {symbol} ({ratio:.1f}x Hacim) - {candle_type}", flush=True)
 
     print(f"[{now_str}] Tarama Bitti. Bulunan Sinyal Sayısı: {match_count}", flush=True)
 
@@ -198,7 +219,7 @@ def run_scanner():
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
-    send_telegram_msg(f"🤖 *Hacim Patlaması Tarayıcısı Aktif!*\nPeriyot: `{VOLUME_INTERVAL}` | Eşik: `{VOLUME_MULTIPLIER}x`")
+    send_telegram_msg(f"🤖 *Hacim Detaylı Tarayıcı Aktif!*\nPeriyot: `{VOLUME_INTERVAL}` | Eşik: `{VOLUME_MULTIPLIER}x`")
     
     while True:
         try:
@@ -206,4 +227,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
         
-        time.sleep(300)  # 5 dakikada bir tarama yapar (İsterseniz bu süreyi değiştirebilirsiniz)
+        time.sleep(300)  # 5 dakikada bir çalışır
