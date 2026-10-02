@@ -31,13 +31,13 @@ CHAT_ID = "6593284503"          # Telegram Chat ID
 
 # MANUEL HACİM VE ZAMAN DİLİMİ AYARLARI
 VOLUME_INTERVAL = "5m"        # Hacim patlaması kontrolü yapılan zaman dilimi ("5m", "15m", "1h")
-VOLUME_MULTIPLIER = 4.0       # Hacim katı şartı (4.0 = 4 Katı)
+VOLUME_MULTIPLIER = 3.0       # Hacim katı şartı (4.0 = 4 Katı)
 LOOKBACK_PERIOD = 20          # Ortalaması alınacak geçmiş mum sayısı
 
 # KATI HACİM FİLTRELERİ (ÖNEMSİZ / ÇÖP COINLERI ELER)
 MIN_CANDLE_VOL_USDT = 300_000   # Mevcut mum hacmi EN AZ 300.000$(0.3M$) olmalı
-MIN_AVG_VOL_USDT = 300_000       # Ortalama mum hacmi EN AZ 50.000$ olmalı
-MIN_24H_VOLUME_USDT = 10_000_000 # 24s genel hacmi en az 5M$ olmalı (Tüm aktif spot coinleri kapsar)
+MIN_AVG_VOL_USDT = 50_000       # Ortalama mum hacmi EN AZ 50.000$ olmalı
+MIN_24H_VOLUME_USDT = 5_000_000 # 24s genel hacmi en az 5M$ olmalı (Tüm aktif spot coinleri kapsar)
 
 # BINANCE SPOT API URL
 BINANCE_SPOT_URL = "https://api.binance.com"
