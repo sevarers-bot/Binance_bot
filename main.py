@@ -2,8 +2,8 @@ import os
 import sys
 import time
 import datetime
+from datetime import timezone, timedelta
 import requests
-import numpy as np
 from flask import Flask
 from threading import Thread
 
@@ -29,24 +29,20 @@ def keep_alive():
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bot Token
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
-MIN_VOLUME_USDT = 100_000_000 # En az 100 Milyon $ 24s Hacim
-THRESHOLD_HIGH = 70.0         # %70 ve üzeri baskı
-THRESHOLD_LOW = 30.0          # %30 ve altı baskı
+# MANUEL HACİM VE ZAMAN DİLİMİ AYARLARI
+VOLUME_INTERVAL = "15m"       # Hacim kontrolü yapılacak zaman dilimi ("5m", "15m", "1h", "4h")
+VOLUME_MULTIPLIER = 4.0       # Normal hacminin kaç katı olsun? (4.0 = 4 Katı)
+LOOKBACK_PERIOD = 20          # Ortalaması alınacak geçmiş mum sayısı
 
-# Funding Rate Filtreleri
-FUNDING_SHORT_MIN = 0.0000    # Short için Funding Rate >= 0.0000
-FUNDING_LONG_MAX = 0.0000     # Long için Funding Rate <= 0.0000
-
-# 5dk RSI Filtre Sınırları
-RSI_5M_SHORT_LIMIT = 75.0     # Short için 5dk RSI >= 75
-RSI_5M_LONG_LIMIT = 40.0      # Long için 5dk RSI <= 40
+MIN_24H_VOLUME_USDT = 20_000_000  # Çok hacimsiz/likiditesiz coinleri elemek için (24s min 20M$)
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# Önceki tarama sonuçlarını tutacak hafıza
-previous_signals = {}
-
 # ==================== YARDIMCI FONKSİYONLAR ====================
+
+def get_tr_time():
+    """Türkiye Saatini (GMT+3) Döndürür"""
+    return (datetime.datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%H:%M:%S')
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -61,39 +57,77 @@ def send_telegram_msg(message):
     except Exception as e:
         print(f"Telegram Hatası: {e}", flush=True)
 
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1:
-        return 50.0
-    deltas = np.diff(prices)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    
-    avg_gain = np.mean(gains[:period])
-    avg_loss = np.mean(losses[:period])
-    
-    for i in range(period, len(deltas)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        
-    if avg_loss == 0:
-        return 100.0
-    
-    rs = avg_gain / avg_loss
-    return round(100.0 - (100.0 / (1 + rs)), 2)
+def get_all_usdt_pairs():
+    """Filtreye uygun tüm USDT çiftlerini getirir"""
+    try:
+        url = f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr"
+        res = requests.get(url, timeout=6).json()
+        if not isinstance(res, list):
+            return []
 
-def get_rsi(symbol, interval="5m"):
+        valid_pairs = []
+        for coin in res:
+            if isinstance(coin, dict) and 'symbol' in coin and 'quoteVolume' in coin:
+                symbol = coin['symbol']
+                try:
+                    vol_24h = float(coin['quoteVolume'])
+                except (ValueError, TypeError):
+                    continue
+
+                if symbol.endswith("USDT") and not symbol.startswith("1000"):
+                    if vol_24h >= MIN_24H_VOLUME_USDT:
+                        valid_pairs.append({
+                            "symbol": symbol,
+                            "price": float(coin.get('lastPrice', 0))
+                        })
+        return valid_pairs
+    except Exception as e:
+        print(f"Sembol Çekme Hatası: {e}", flush=True)
+        return []
+
+def check_volume_spike(symbol, interval, multiplier, lookback):
+    """
+    Seçilen zaman diliminde son tamamlanan/mevcut mumun hacmini 
+    geçmiş mumların ortalamasıyla kıyaslar.
+    """
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/klines"
-        params = {"symbol": symbol, "interval": interval, "limit": 50}
+        params = {"symbol": symbol, "interval": interval, "limit": lookback + 1}
         res = requests.get(url, params=params, timeout=4).json()
-        if isinstance(res, list):
-            close_prices = [float(k[4]) for k in res]
-            return calculate_rsi(close_prices, 14)
-        return 50.0
+        
+        if isinstance(res, list) and len(res) >= lookback:
+            # Kline verisi: [open_time, open, high, low, close, volume, close_time, quote_asset_volume, ...]
+            # Hacim hesabı için USDT hacmi (quote_asset_volume -> index 7) kullanıyoruz.
+            volumes = [float(k[7]) for k in res]
+            
+            current_volume = volumes[-1]  # Şu anki açık olan mumun hacmi
+            past_volumes = volumes[:-1]   # Geçmiş N adet mumun hacmi
+            
+            avg_volume = sum(past_volumes) / len(past_volumes)
+            
+            if avg_volume > 0:
+                ratio = current_volume / avg_volume
+                if ratio >= multiplier:
+                    return True, current_volume, avg_volume, ratio
+                    
+        return False, 0.0, 0.0, 0.0
     except Exception:
-        return 50.0
+        return False, 0.0, 0.0, 0.0
+
+def get_funding_info(symbol):
+    """Funding Rate çeker"""
+    try:
+        url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
+        params = {"symbol": symbol}
+        res = requests.get(url, params=params, timeout=3).json()
+        if isinstance(res, dict) and 'lastFundingRate' in res:
+            return float(res['lastFundingRate'])
+        return 0.0
+    except Exception:
+        return 0.0
 
 def get_open_interest(symbol, price):
+    """Open Interest (Açık Pozisyon) çeker"""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/openInterest"
         params = {"symbol": symbol}
@@ -106,157 +140,57 @@ def get_open_interest(symbol, price):
     except Exception:
         return 0.0, 0.0
 
-def get_all_usdt_pairs():
-    try:
-        url = f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr"
-        res = requests.get(url, timeout=6).json()
-        if not isinstance(res, list):
-            return []
-
-        valid_pairs = []
-        for coin in res:
-            if isinstance(coin, dict) and 'symbol' in coin and 'quoteVolume' in coin:
-                symbol = coin['symbol']
-                try:
-                    volume = float(coin['quoteVolume'])
-                except (ValueError, TypeError):
-                    continue
-
-                if symbol.endswith("USDT") and not symbol.startswith("1000"):
-                    if volume >= MIN_VOLUME_USDT:
-                        valid_pairs.append({
-                            "symbol": symbol,
-                            "volume": volume,
-                            "price": float(coin.get('lastPrice', 0))
-                        })
-        return valid_pairs
-    except Exception as e:
-        print(f"Hacim Çekme Hatası: {e}", flush=True)
-        return []
-
-def get_funding_info(symbol):
-    try:
-        url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
-        params = {"symbol": symbol}
-        res = requests.get(url, params=params, timeout=3).json()
-        if isinstance(res, dict) and 'lastFundingRate' in res:
-            return float(res['lastFundingRate'])
-        return 0.0
-    except Exception:
-        return 0.0
-
-def get_long_short_ratio(symbol):
-    try:
-        url = f"{BINANCE_FUTURES_URL}/futures/data/topLongShortAccountRatio"
-        params = {"symbol": symbol, "period": "5m", "limit": 1}
-        res = requests.get(url, params=params, timeout=3).json()
-        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-            long_ratio = float(res[0].get('longAccount', 0.5)) * 100
-            short_ratio = float(res[0].get('shortAccount', 0.5)) * 100
-            return round(long_ratio, 2), round(short_ratio, 2)
-        return 50.0, 50.0
-    except Exception:
-        return 50.0, 50.0
-
 # ==================== TARAMA SÜRECİ ====================
 
 def run_scanner():
-    global previous_signals
-    now_str = datetime.datetime.now().strftime('%H:%M:%S')
-    print(f"[{now_str}] Min Hacim: 100M$ | 5dk RSI (Short>=75, Long<=40) | Tarama Başlatıldı...", flush=True)
+    now_str = get_tr_time()
+    print(f"[{now_str}] Hacim Patlaması Taraması ({VOLUME_INTERVAL} - {VOLUME_MULTIPLIER} Kat) Başlatıldı...", flush=True)
     
     pairs = get_all_usdt_pairs()
-    print(f"[{now_str}] 100M$ Hacim Şartını Geçen Çift Sayısı: {len(pairs)}", flush=True)
+    print(f"[{now_str}] Taranacak Çift Sayısı: {len(pairs)}", flush=True)
 
     if not pairs:
         return
 
-    current_signals = {}
     match_count = 0
 
     for coin in pairs:
-        if coin['volume'] < MIN_VOLUME_USDT:
-            continue
-
         symbol = coin['symbol']
         price = coin['price']
-        volume_m = coin['volume'] / 1_000_000
 
-        time.sleep(0.15)
-        funding_rate = get_funding_info(symbol)
+        time.sleep(0.1)  # API rate limit koruması
+        
+        # Hacim Kontrolü
+        is_spike, current_vol, avg_vol, ratio = check_volume_spike(
+            symbol, 
+            VOLUME_INTERVAL, 
+            VOLUME_MULTIPLIER, 
+            LOOKBACK_PERIOD
+        )
 
-        time.sleep(0.1)
-        long_pct, short_pct = get_long_short_ratio(symbol)
-
-        signal_type = None
-
-        # 1. SHORT SİNYALİ (Funding >= 0.0000 + Long >= %70 + 5dk RSI >= 75)
-        if funding_rate >= FUNDING_SHORT_MIN and long_pct >= THRESHOLD_HIGH and short_pct <= THRESHOLD_LOW:
-            rsi_5m = get_rsi(symbol, "5m")
-            if rsi_5m >= RSI_5M_SHORT_LIMIT:
-                signal_type = "SHORT"
-
-        # 2. LONG SİNYALİ (Funding <= 0.0000 + Short >= %70 + 5dk RSI <= 40)
-        elif funding_rate <= FUNDING_LONG_MAX and short_pct >= THRESHOLD_HIGH and long_pct <= THRESHOLD_LOW:
-            rsi_5m = get_rsi(symbol, "5m")
-            if rsi_5m <= RSI_5M_LONG_LIMIT:
-                signal_type = "LONG"
-
-        if signal_type:
-            # Sinyal onaylandığında RSI ve OI bilgilerini tamamla
-            if signal_type == "SHORT":
-                rsi_5m = rsi_5m if 'rsi_5m' in locals() else get_rsi(symbol, "5m")
-            rsi_1h = get_rsi(symbol, "1h")
+        if is_spike:
+            funding_rate = get_funding_info(symbol)
             oi_amount, oi_usdt = get_open_interest(symbol, price)
+            
+            current_vol_m = current_vol / 1_000_000
+            avg_vol_m = avg_vol / 1_000_000
             oi_m = oi_usdt / 1_000_000
             match_count += 1
 
-            # Mevcut değerleri kaydet
-            current_signals[symbol] = {
-                "volume_m": volume_m,
-                "oi_m": oi_m,
-                "long_pct": long_pct,
-                "short_pct": short_pct
-            }
-
-            # Önceki veriler var mı kontrol et
-            if symbol in previous_signals:
-                prev = previous_signals[symbol]
-                vol_str = f"`${prev['volume_m']:.2f}M` ➡️ `${volume_m:.2f}M`"
-                oi_str = f"`${prev['oi_m']:.2f}M` ➡️ `${oi_m:.2f}M`"
-                long_str = f"`%{prev['long_pct']}` ➡️️ `%{long_pct}`"
-                short_str = f"`%{prev['short_pct']}` ➡️ `%{short_pct}`"
-                repeat_note = "🔄 *[TEKRARLAYAN SİNYAL - DEĞİŞİMLER]*\n\n"
-            else:
-                vol_str = f"`${volume_m:.2f}M`"
-                oi_str = f"`${oi_m:.2f}M`"
-                long_str = f"`%{long_pct}`"
-                short_str = f"`%{short_pct}`"
-                repeat_note = ""
-
-            if signal_type == "SHORT":
-                header = "🔴 🔻 *SHORT SİNYALİ* 🔻 🔴"
-            else:
-                header = "🟢 🔺 *LONG SİNYALİ* 🔺 🟢"
-
             msg = (
-                f"{header}\n\n"
-                f"{repeat_note}"
+                f"🔥 *HACİM PATLAMASI SİNYALİ ({VOLUME_INTERVAL})*\n\n"
                 f"🪙 *Sembol:* #{symbol}\n"
-                f"💵 *Fiyat:* `{price}`\n"
-                f"📊 *24s Hacim:* {vol_str}\n"
-                f"🔓 *Open Interest:* {oi_str} ({oi_amount:,.0f} Kontrat)\n\n"
-                f"🟢 *Long Oranı:* {long_str}\n"
-                f"🔴 *Short Oranı:* {short_str}\n"
+                f"💵 *Fiyat:* `{price}`\n\n"
+                f"⚡ *Hacim Artışı:* `{ratio:.2f} Kat` ({VOLUME_MULTIPLIER}x Üzeri)\n"
+                f"📊 *Mevcut ({VOLUME_INTERVAL}) Hacim:* `${current_vol_m:.2f}M`\n"
+                f"📈 *Ortalama Hacim:* `${avg_vol_m:.2f}M`\n\n"
+                f"🔓 *Open Interest:* `${oi_m:.2f}M` ({oi_amount:,.0f} Kontrat)\n"
                 f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.4f})\n\n"
-                f"📈 *RSI (5dk):* `{rsi_5m}` | *RSI (1saat):* `{rsi_1h}`\n\n"
                 f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
             )
             send_telegram_msg(msg)
-            print(f"-> SİNYAL ({signal_type}): {symbol}", flush=True)
+            print(f"-> SİNYAL: {symbol} ({ratio:.1f}x Hacim)", flush=True)
 
-    # Önceki hafızayı güncelle
-    previous_signals = current_signals
     print(f"[{now_str}] Tarama Bitti. Bulunan Sinyal Sayısı: {match_count}", flush=True)
 
 # ==================== ANA DÖNGÜ ====================
@@ -264,7 +198,7 @@ def run_scanner():
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
-    send_telegram_msg("🤖 *5dk RSI Destekli Tarayıcı Aktif!*")
+    send_telegram_msg(f"🤖 *Hacim Patlaması Tarayıcısı Aktif!*\nPeriyot: `{VOLUME_INTERVAL}` | Eşik: `{VOLUME_MULTIPLIER}x`")
     
     while True:
         try:
@@ -272,4 +206,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
         
-        time.sleep(600)  # 10 dakikada bir çalışır (600 saniye)
+        time.sleep(300)  # 5 dakikada bir tarama yapar (İsterseniz bu süreyi değiştirebilirsiniz)
