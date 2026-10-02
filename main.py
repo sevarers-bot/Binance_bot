@@ -30,8 +30,8 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bo
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
 # MANUEL HACİM VE ZAMAN DİLİMİ AYARLARI
-VOLUME_INTERVAL = "15m"       # Hacim kontrolü yapılacak zaman dilimi ("5m", "15m", "1h", "4h")
-VOLUME_MULTIPLIER = 3.0       # Normal hacminin kaç katı olsun? (4.0 = 4 Katı)
+VOLUME_INTERVAL = "5m"       # Hacim kontrolü yapılacak zaman dilimi ("5m", "15m", "1h", "4h")
+VOLUME_MULTIPLIER = 8.0       # Normal hacminin kaç katı olsun? (4.0 = 4 Katı)
 LOOKBACK_PERIOD = 20          # Ortalaması alınacak geçmiş mum sayısı
 
 MIN_24H_VOLUME_USDT = 10_000_000  # 24s min 20M$ hacim şartı
