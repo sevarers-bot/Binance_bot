@@ -31,7 +31,7 @@ CHAT_ID = "6593284503"          # Telegram Chat ID
 
 # MANUEL HACİM VE ZAMAN DİLİMİ AYARLARI
 VOLUME_INTERVAL = "5m"        # Hacim patlaması kontrolü yapılan zaman dilimi ("5m", "15m", "1h")
-VOLUME_MULTIPLIER = 5.0       # Hacim katı şartı (4.0 = 4 Katı)
+VOLUME_MULTIPLIER = 3.0       # Hacim katı şartı (4.0 = 4 Katı)
 LOOKBACK_PERIOD = 20          # Ortalaması alınacak geçmiş mum sayısı
 
 # LONG / SHORT ORANI ZAMAN DİLİMİ AYARI
