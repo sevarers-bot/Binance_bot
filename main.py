@@ -30,13 +30,13 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bo
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
 # MANUEL HACİM VE ZAMAN DİLİMİ AYARLARI
-VOLUME_INTERVAL = "5m"        # Hacim kontrolü yapılan zaman dilimi
+VOLUME_INTERVAL = "15m"        # Hacim kontrolü yapılan zaman dilimi
 VOLUME_MULTIPLIER = 4.0       # Kat şartı (4.0 = 4 Katı)
 LOOKBACK_PERIOD = 20          # Ortalaması alınacak geçmiş mum sayısı
 
 # KATI HACİM FİLTRELERİ (ÖNEMSİZ PATLAMALARI ELER)
-MIN_CANDLE_VOL_USDT = 500_000   # Mevcut mum hacmi EN AZ 500.000$(0.5M$) olmalı!
-MIN_AVG_VOL_USDT = 100_000      # Ortalama mum hacmi EN AZ 100.000$(0.1M$) olmalı!
+MIN_CANDLE_VOL_USDT = 1_000_000   # Mevcut mum hacmi EN AZ 500.000$(0.5M$) olmalı!
+MIN_AVG_VOL_USDT = 1_000_000      # Ortalama mum hacmi EN AZ 100.000$(0.1M$) olmalı!
 MIN_24H_VOLUME_USDT = 20_000_000# 24s genel hacmi en az 20M$ olmalı!
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
