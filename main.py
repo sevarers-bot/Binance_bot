@@ -30,14 +30,18 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"  # Telegram Bo
 CHAT_ID = "6593284503"          # Telegram Chat ID
 
 # MANUEL HACİM VE ZAMAN DİLİMİ AYARLARI
-VOLUME_INTERVAL = "15m"        # Hacim kontrolü yapılan zaman dilimi
-VOLUME_MULTIPLIER = 4.0       # Kat şartı (4.0 = 4 Katı)
+VOLUME_INTERVAL = "5m"        # Hacim patlaması kontrolü yapılan zaman dilimi ("5m", "15m", "1h")
+VOLUME_MULTIPLIER = 5.0       # Hacim katı şartı (4.0 = 4 Katı)
 LOOKBACK_PERIOD = 20          # Ortalaması alınacak geçmiş mum sayısı
 
+# LONG / SHORT ORANI ZAMAN DİLİMİ AYARI
+# Seçenekler: "5m", "15m", "30m", "1h", "2h", "4h", "12h", "1d"
+LS_RATIO_INTERVAL = "1h"      # Long/Short oranının çekileceği zaman dilimi (Varsayılan 1 saatlik)
+
 # KATI HACİM FİLTRELERİ (ÖNEMSİZ PATLAMALARI ELER)
-MIN_CANDLE_VOL_USDT = 1_000_000   # Mevcut mum hacmi EN AZ 500.000$(0.5M$) olmalı!
-MIN_AVG_VOL_USDT = 1_000_000      # Ortalama mum hacmi EN AZ 100.000$(0.1M$) olmalı!
-MIN_24H_VOLUME_USDT = 20_000_000# 24s genel hacmi en az 20M$ olmalı!
+MIN_CANDLE_VOL_USDT = 500_000   # Mevcut mum hacmi EN AZ 500.000$(0.5M$) olmalı
+MIN_AVG_VOL_USDT = 500_000      # Ortalama mum hacmi EN AZ 100.000$(0.1M$) olmalı
+MIN_24H_VOLUME_USDT = 20_000_000# 24s genel hacmi en az 20M$ olmalı
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
@@ -89,6 +93,10 @@ def get_all_usdt_pairs():
         return []
 
 def check_volume_spike_and_breakdown(symbol, interval, multiplier, lookback):
+    """
+    Seçilen zaman diliminde hacim patlamasını kontrol eder ve 
+    mevcut mumun Long (Alış / Yeşil) ve Short (Satış / Kırmızı) hacim dağılımını hesaplar.
+    """
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/klines"
         params = {"symbol": symbol, "interval": interval, "limit": lookback + 1}
@@ -105,7 +113,7 @@ def check_volume_spike_and_breakdown(symbol, interval, multiplier, lookback):
             past_volumes = volumes[:-1]   # Geçmiş N mum hacmi
             avg_volume = sum(past_volumes) / len(past_volumes)
             
-            # --- EK HACİM KONTROLÜ (ÇÖP COİNLERİ ELER) ---
+            # Minimum hacim kontrolleri
             if current_volume < MIN_CANDLE_VOL_USDT or avg_volume < MIN_AVG_VOL_USDT:
                 return False, 0.0, 0.0, 0.0, 0.0, 0.0
             
@@ -125,7 +133,22 @@ def check_volume_spike_and_breakdown(symbol, interval, multiplier, lookback):
     except Exception:
         return False, 0.0, 0.0, 0.0, 0.0, 0.0
 
+def get_top_trader_long_short_ratio(symbol, interval):
+    """Top Trader Long/Short Hesap Oranını Çeker"""
+    try:
+        url = f"{BINANCE_FUTURES_URL}/futures/data/topLongShortAccountRatio"
+        params = {"symbol": symbol, "period": interval, "limit": 1}
+        res = requests.get(url, params=params, timeout=3).json()
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+            long_ratio = float(res[0].get('longAccount', 0.5)) * 100
+            short_ratio = float(res[0].get('shortAccount', 0.5)) * 100
+            return round(long_ratio, 2), round(short_ratio, 2)
+        return 50.0, 50.0
+    except Exception:
+        return 50.0, 50.0
+
 def get_funding_info(symbol):
+    """Funding Rate çeker"""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
         params = {"symbol": symbol}
@@ -137,6 +160,7 @@ def get_funding_info(symbol):
         return 0.0
 
 def get_open_interest(symbol, price):
+    """Open Interest (Açık Pozisyon) çeker"""
     try:
         url = f"{BINANCE_FUTURES_URL}/fapi/v1/openInterest"
         params = {"symbol": symbol}
@@ -179,6 +203,7 @@ def run_scanner():
         if is_spike:
             funding_rate = get_funding_info(symbol)
             oi_amount, oi_usdt = get_open_interest(symbol, price)
+            long_pct, short_pct = get_top_trader_long_short_ratio(symbol, LS_RATIO_INTERVAL)
             
             current_vol_m = current_vol / 1_000_000
             avg_vol_m = avg_vol / 1_000_000
@@ -199,12 +224,15 @@ def run_scanner():
                 f"🟢 *Long (Alış / Yeşil) Hacim:* `${long_vol_m:.2f}M`\n"
                 f"🔴 *Short (Satış / Kırmızı) Hacim:* `${short_vol_m:.2f}M`\n"
                 f"📈 *Ortalama Hacim:* `${avg_vol_m:.2f}M`\n\n"
+                f"👥 *Trader Oranları ({LS_RATIO_INTERVAL}):*\n"
+                f"🟢 *Long Oranı:* `%{long_pct}`\n"
+                f"🔴 *Short Oranı:* `%{short_pct}`\n\n"
                 f"🔓 *Open Interest:* `${oi_m:.2f}M` ({oi_amount:,.0f} Kontrat)\n"
                 f"💸 *Funding Rate:* `{funding_rate}` (%{funding_rate*100:.4f})\n\n"
                 f"🔗 [Binance Futures](https://www.binance.com/en/futures/{symbol})"
             )
             send_telegram_msg(msg)
-            print(f"-> SİNYAL: {symbol} ({ratio:.1f}x Hacim) - {candle_type}", flush=True)
+            print(f"-> SİNYAL: {symbol} ({ratio:.1f}x Hacim) - Top Trader ({LS_RATIO_INTERVAL}): %{long_pct} L / %{short_pct} S", flush=True)
 
     print(f"[{now_str}] Tarama Bitti. Bulunan Sinyal Sayısı: {match_count}", flush=True)
 
@@ -213,7 +241,7 @@ def run_scanner():
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
-    send_telegram_msg(f"🤖 *Hacim Detaylı Tarayıcı Aktif!*\nPeriyot: `{VOLUME_INTERVAL}` | Eşik: `{VOLUME_MULTIPLIER}x`\nMin Mum Hacmi: `500K$`")
+    send_telegram_msg(f"🤖 *Hacim & Trader Oranlı Tarayıcı Aktif!*\nHacim Periyodu: `{VOLUME_INTERVAL}` ({VOLUME_MULTIPLIER}x)\nTrader Oran Periyodu: `{LS_RATIO_INTERVAL}`")
     
     while True:
         try:
@@ -221,4 +249,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
         
-        time.sleep(300)
+        time.sleep(300)  # 5 dakikada bir tarar
