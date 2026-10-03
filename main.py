@@ -28,7 +28,7 @@ def keep_alive():
 
 # ==================== KULLANICI AYARLARI ====================
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
-CHAT_ID = "-1004481336360"
+CHAT_ID = "-1004481336360"  # Grup ID'niz
 
 # --------------------------------------------------------------------------
 # MANUEL ZAMAN DİLİMİ AYARI (İstediğinizi seçip tırnak içine yazın)
@@ -51,7 +51,7 @@ INTERVAL_LABELS = {
     "5m": "5 Dakikalık (5M)"
 }
 
-! nasıldef get_tr_time():
+def get_tr_time():
     return (datetime.datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%H:%M:%S')
 
 def send_telegram_msg(message):
@@ -155,19 +155,19 @@ def get_futures_market_metrics(symbol):
 
     return fr_pct, oi_usdt, top_long_pct, top_short_pct
 
-# ==================== TEKNİK ANALİZ (PANDAS EMA) ====================
+# ==================== TEKNİK ANALİZ (KAPANMIŞ MUM KONTROLÜ) ====================
 def check_ema_conditions(symbol, interval, market_type):
     """
     1. EMA 20 > EMA 50
-    2. Fiyat > EMA 20 ve Fiyat > EMA 50
-    3. Fiyat EMA 200'ü yukarı kesti mi?
-    (Harici 'ta' kütüphanesi yerine dahili Pandas ewm kullanılmıştır)
+    2. Kapanış Fiyatı > EMA 20 ve Kapanış Fiyatı > EMA 50
+    3. Fiyat EMA 200'ü tamamlanmış mumda yukarı kesti mi?
+    (Not: İğne atmaları engellemek için iloc[-2] yani tam kapunan mum kullanılmıştır)
     """
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
 
     try:
-        url = f"{base_url}{endpoint}"m
+        url = f"{base_url}{endpoint}"
         params = {"symbol": symbol, "interval": interval, "limit": 220}
         res = requests.get(url, params=params, timeout=4).json()
 
@@ -181,20 +181,21 @@ def check_ema_conditions(symbol, interval, market_type):
 
         df['close'] = df['close'].astype(float)
 
-        # Pandas dahili Exponential Moving Average (EMA)
+        # Pandas EMA Hesaplaması
         df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        # Canlı mum (iloc[-1]) yerine, tamamlanmış mumlar (iloc[-2] ve iloc[-3]) kullanılır:
+        # Kapanmış mumlar üzerinden değerlendirme yapılıyor:
+        # iloc[-2] = Tamamlanmış/Kapanmış son mum
+        # iloc[-3] = Ondan bir önceki kapanmış mum
+        curr_close = df['close'].iloc[-2]
+        prev_close = df['close'].iloc[-3]
 
-curr_close = df['close'].iloc[-2]   # Tamamlanmış son mumun kapanış fiyatı
-prev_close = df['close'].iloc[-3]   # Ondan bir önceki tamamlanmış mum
-
-curr_ema20 = df['ema20'].iloc[-2]
-curr_ema50 = df['ema50'].iloc[-2]
-curr_ema200 = df['ema200'].iloc[-2]
-prev_ema200 = df['ema200'].iloc[-3]
+        curr_ema20 = df['ema20'].iloc[-2]
+        curr_ema50 = df['ema50'].iloc[-2]
+        curr_ema200 = df['ema200'].iloc[-2]
+        prev_ema200 = df['ema200'].iloc[-3]
 
         c1 = curr_ema20 > curr_ema50
         c2 = (curr_close > curr_ema20) and (curr_close > curr_ema50)
@@ -245,17 +246,22 @@ def scan_market(pairs, interval):
                 trade_link = f"https://www.binance.com/en/trade/{symbol}"
 
             msg = (
-                f"🎯 *EMA 200 YUKARI KESİŞİM SİNYALİ*\n"
+                f"🎯 *EMA 200 YUKARI KESİŞİM SİNYALİ (KAPANIŞ ONAYLI)*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
-                f"💵 *Anlık Fiyat:* `${price}`\n\n"
-                f"🚀 *Fiyat EMA 200'ü Yukarı Kesti!*\n\n"
+                f"💵 *Kapanış Fiyatı:* `${price}`\n\n"
+                f"📈 *Teknik Göstergeler:*\n"
+                f"• *EMA 20:* `${ema20:,.4f}`\n"
+                f"• *EMA 50:* `${ema50:,.4f}`\n"
+                f"• *EMA 200:* `${ema200:,.4f}`\n"
+                f"✅ *Kapanış > EMA 20 > EMA 50*\n"
+                f"🚀 *Mum Kapanışı EMA 200 Üzerinde Gerçekleşti!*\n\n"
                 f"{market_details}\n"
                 f"🔗 [Binance {market_type.capitalize()} Trade]({trade_link})"
             )
 
             send_telegram_msg(msg)
-            print(f"-> {market_type} SİNYALİ: {symbol} [{interval_label}] - Fiyat: ${price}", flush=True)
+            print(f"-> {market_type} SİNYALİ: {symbol} [{interval_label}] - Kapanış Fiyatı: ${price}", flush=True)
 
     return match_count
 
@@ -279,7 +285,7 @@ if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
-    send_telegram_msg(f"🟢 *Çift Piyasa EMA Tarayıcısı Aktif!*\n⏱️ *Taranan Zaman Dilimi:* `{label}`\nKapsam: SPOT & FUTURES")
+    send_telegram_msg(f"🟢 *Çift Piyasa EMA Tarayıcısı Aktif!*\n⏱️ *Taranan Zaman Dilimi:* `{label}`\nKapsam: SPOT & FUTURES\n✅ *Sinyal Modu:* Mum Kapanış Onaylı")
 
     while True:
         try:
