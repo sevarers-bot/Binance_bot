@@ -5,18 +5,17 @@ import datetime
 from datetime import timezone, timedelta
 import requests
 import pandas as pd
-import ta
 from flask import Flask
 from threading import Thread
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ==================== WEB SUNUCUSU (Render / Keep-Alive) ====================
+# ==================== WEB SUNUCUSU (Railway / Render Keep-Alive) ====================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Spot & Futures EMA Tarayıcı Aktif!"
+    return "Spot & Futures EMA Tarayıcı Bot Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -43,7 +42,7 @@ MIN_24H_VOLUME_USDT = 10_000_000
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# Zaman dilimine göre bekleme ve log açıklamaları
+# Zaman dilimi açıklamaları
 INTERVAL_LABELS = {
     "1d": "1 Günlük (1D)",
     "4h": "4 Saatlik (4H)",
@@ -156,20 +155,19 @@ def get_futures_market_metrics(symbol):
 
     return fr_pct, oi_usdt, top_long_pct, top_short_pct
 
-# ==================== TEKNİK ANALİZ (EMA KONTROLÜ) ====================
+# ==================== TEKNİK ANALİZ (PANDAS EMA) ====================
 def check_ema_conditions(symbol, interval, market_type):
     """
-    Seçilen Interval Üzerinde:
     1. EMA 20 > EMA 50
     2. Fiyat > EMA 20 ve Fiyat > EMA 50
     3. Fiyat EMA 200'ü yukarı kesti mi?
+    (Harici 'ta' kütüphanesi yerine dahili Pandas ewm kullanılmıştır)
     """
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
 
     try:
         url = f"{base_url}{endpoint}"
-        # EMA 200 hesaplamak için en az 210 adet muma ihtiyaç var
         params = {"symbol": symbol, "interval": interval, "limit": 220}
         res = requests.get(url, params=params, timeout=4).json()
 
@@ -183,10 +181,10 @@ def check_ema_conditions(symbol, interval, market_type):
 
         df['close'] = df['close'].astype(float)
 
-        # Indicator Hesaplama
-        df['ema20'] = ta.trend.ema_indicator(df['close'], window=20)
-        df['ema50'] = ta.trend.ema_indicator(df['close'], window=50)
-        df['ema200'] = ta.trend.ema_indicator(df['close'], window=200)
+        # Pandas dahili Exponential Moving Average (EMA)
+        df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
         curr_close = df['close'].iloc[-1]
         prev_close = df['close'].iloc[-2]
