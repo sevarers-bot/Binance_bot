@@ -34,7 +34,7 @@ CHAT_ID = "-1004481336360"
 # MANUEL ZAMAN DİLİMİ AYARI (İstediğinizi seçip tırnak içine yazın)
 # Seçenekler: "1d" (Günlük), "4h" (4 Saatlik), "1h" (1 Saatlik), "15m" (15 Dakikalık), "5m" (5 Dakikalık)
 # --------------------------------------------------------------------------
-SCAN_INTERVAL = "1h"  
+SCAN_INTERVAL = "15m"  
 
 # Filtre: En az kaç USDT 24S hacimli coinler taransın
 MIN_24H_VOLUME_USDT = 10_000_000   
