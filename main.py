@@ -42,31 +42,52 @@ MIN_24H_VOLUME_USDT = 5_000_000 # 24s genel hacmi en az 5M$ olmalı (Tüm aktif 
 # BINANCE SPOT API URL
 BINANCE_SPOT_URL = "https://api.binance.com"
 
-# STATIC CATEGORY MAPPING
+# Gelişmiş ve Genişletilmiş Kategori Haritası
 CATEGORY_MAP = {
-    # Layer 1
+    # BNB & BUSD / Stablecoinler
+    "BNB": "BNB Chain / Exchange Token", "USDC": "Stablecoin", "USDT": "Stablecoin", "FDUSD": "Stablecoin",
+    
+    # Layer 1 / Mainnet
     "BTC": "Layer 1 / Store of Value", "ETH": "Layer 1", "SOL": "Layer 1", "ADA": "Layer 1",
-    "AVAX": "Layer 1", "NEAR": "Layer 1", "SUI": "Layer 1", "APT": "Layer 1", "SEI": "Layer 1",
+    "AVAX": "Layer 1", "NEAR": "Layer 1 / AI", "SUI": "Layer 1", "APT": "Layer 1", "SEI": "Layer 1",
     "DOT": "Layer 1", "ATOM": "Layer 1", "FTM": "Layer 1", "INJ": "Layer 1", "ALGO": "Layer 1",
-    # Layer 2
+    "XRP": "Layer 1 / Payment", "LTC": "Layer 1 / Payment", "TRX": "Layer 1", "TON": "Layer 1",
+    
+    # Layer 2 / Scaling
     "MATIC": "Layer 2", "POL": "Layer 2", "OP": "Layer 2", "ARB": "Layer 2", "MANTA": "Layer 2",
     "STRK": "Layer 2", "ZK": "Layer 2", "METIS": "Layer 2", "BLAST": "Layer 2",
+    
     # AI / Yapay Zeka
     "FET": "AI (Yapay Zeka)", "AGIX": "AI (Yapay Zeka)", "OCEAN": "AI (Yapay Zeka)", "RENDER": "AI / DePIN",
-    "TAO": "AI (Yapay Zeka)", "ARKM": "AI / Analytics", "WLD": "AI / Identity",
-    # DeFi / DEX
+    "TAO": "AI (Yapay Zeka)", "ARKM": "AI / Analytics", "WLD": "AI / Identity", "GRT": "AI / Indexing",
+    
+    # DeFi / DEX / Lending
     "UNI": "DeFi / DEX", "AAVE": "DeFi / Lending", "MKR": "DeFi", "CRV": "DeFi", "LDO": "DeFi / Staking",
-    "PENDLE": "DeFi / Yield", "ENA": "DeFi / Synthetic Dollar", "RAY": "DeFi / DEX",
+    "PENDLE": "DeFi / Yield", "ENA": "DeFi / Synthetic Dollar", "RAY": "DeFi / DEX", "CAKE": "DeFi / DEX",
+    
     # Meme Coins
     "DOGE": "Meme", "SHIB": "Meme", "PEPE": "Meme", "BONK": "Meme", "FLOKI": "Meme", "WIF": "Meme",
-    "BOME": "Meme", "MEME": "Meme", "POPCAT": "Meme",
-    # Gaming / NFT / Metaverse
-    "GALA": "Gaming / Metaverse", "AXS": "Gaming", "SAND": "Metaverse", "MANA": "Metaverse",
-    "BEAM": "Gaming", "IMX": "Gaming / Layer 2", "PIXEL": "Gaming",
-    # RWA / Infrastructure
+    "BOME": "Meme", "MEME": "Meme", "POPCAT": "Meme", "1000SATS": "Meme / Ordinals",
+    
+    # Infrastructure / RWA / Oracle
     "LINK": "Oracle / RWA", "PYTH": "Oracle", "TIA": "Modular Blockchain", "ALT": "Modular / Restaking",
-    "ONDO": "RWA (Real World Assets)"
+    "ONDO": "RWA (Real World)", "RNDR": "DePIN / GPU", "FIL": "Storage / DePIN"
 }
+
+def get_coin_category(symbol):
+    """Coin'in kategorisini tespit eder, yoksa Binance API'den etiket sorgular"""
+    base_asset = symbol.replace("USDT", "").replace("1000", "").replace("USDC", "")
+    
+    # 1. Tanımlı Haritadan Bak
+    if base_asset in CATEGORY_MAP:
+        return CATEGORY_MAP[base_asset]
+    
+    # 2. Haritada yoksa varsayılan akıllı sınıflandırma
+    if "DOWN" in symbol or "UP" in symbol:
+        return "Leveraged Token"
+    
+    return "Diğer / Altcoin"
+
 
 # ==================== YARDIMCI FONKSİYONLAR ====================
 
