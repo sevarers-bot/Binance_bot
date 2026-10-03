@@ -51,7 +51,7 @@ INTERVAL_LABELS = {
     "5m": "5 Dakikalık (5M)"
 }
 
-def get_tr_time():
+! nasıldef get_tr_time():
     return (datetime.datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%H:%M:%S')
 
 def send_telegram_msg(message):
@@ -167,7 +167,7 @@ def check_ema_conditions(symbol, interval, market_type):
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
 
     try:
-        url = f"{base_url}{endpoint}"
+        url = f"{base_url}{endpoint}"m
         params = {"symbol": symbol, "interval": interval, "limit": 220}
         res = requests.get(url, params=params, timeout=4).json()
 
@@ -186,13 +186,15 @@ def check_ema_conditions(symbol, interval, market_type):
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        curr_close = df['close'].iloc[-1]
-        prev_close = df['close'].iloc[-2]
+        # Canlı mum (iloc[-1]) yerine, tamamlanmış mumlar (iloc[-2] ve iloc[-3]) kullanılır:
 
-        curr_ema20 = df['ema20'].iloc[-1]
-        curr_ema50 = df['ema50'].iloc[-1]
-        curr_ema200 = df['ema200'].iloc[-1]
-        prev_ema200 = df['ema200'].iloc[-2]
+curr_close = df['close'].iloc[-2]   # Tamamlanmış son mumun kapanış fiyatı
+prev_close = df['close'].iloc[-3]   # Ondan bir önceki tamamlanmış mum
+
+curr_ema20 = df['ema20'].iloc[-2]
+curr_ema50 = df['ema50'].iloc[-2]
+curr_ema200 = df['ema200'].iloc[-2]
+prev_ema200 = df['ema200'].iloc[-3]
 
         c1 = curr_ema20 > curr_ema50
         c2 = (curr_close > curr_ema20) and (curr_close > curr_ema50)
