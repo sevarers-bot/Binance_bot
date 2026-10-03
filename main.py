@@ -28,7 +28,7 @@ def keep_alive():
 
 # ==================== KULLANICI AYARLARI ====================
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
-CHAT_ID = "6593284503"
+CHAT_ID = "-1004481336360"
 
 # --------------------------------------------------------------------------
 # MANUEL ZAMAN DİLİMİ AYARI (İstediğinizi seçip tırnak içine yazın)
