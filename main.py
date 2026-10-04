@@ -31,18 +31,26 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
 CHAT_ID = "-1004481336360"  # Grup ID'niz
 
 # --------------------------------------------------------------------------
-# MANUEL ZAMAN DİLİMİ AYARI (İstediğinizi seçip tırnak içine yazın)
+# MANUEL ZAMAN DİLİMİ AYARI
 # Seçenekler: "1d" (Günlük), "4h" (4 Saatlik), "1h" (1 Saatlik), "15m" (15 Dakikalık), "5m" (5 Dakikalık)
 # --------------------------------------------------------------------------
 SCAN_INTERVAL = "15m"  
 
-# Filtre: En az kaç USDT 24S hacimli coinler taransın
+# Filtre 1: En az kaç USDT 24S hacimli coinler taransın
 MIN_24H_VOLUME_USDT = 10_000_000   
+
+# Filtre 2: Kapanış fiyatı EMA 200'ü en az % kaç yukarı geçmiş olmalı? (%0.15 önerilir)
+MIN_BREAKOUT_PCT = 0.15  
+
+# Filtre 3: Aynı coin için tekrar bildirim atılmadan önce geçmesi gereken süre (Dakika Cinsinden)
+COOLDOWN_MINUTES = 60  
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# Zaman dilimi açıklamaları
+# Hafıza: Aynı coine sürekli bildirim atmamak için gönderim zamanlarını saklar
+SENT_SIGNALS = {}
+
 INTERVAL_LABELS = {
     "1d": "1 Günlük (1D)",
     "4h": "4 Saatlik (4H)",
@@ -121,20 +129,17 @@ def get_futures_usdt_pairs():
 
 # ==================== METRİK ÇEKME ====================
 def get_futures_market_metrics(symbol):
-    """Futures İçin Funding Rate (FR), Open Interest (OI) ve Top Trader Long/Short Oranı"""
     fr_pct = 0.0
     oi_usdt = 0.0
     top_long_pct = 50.0
     top_short_pct = 50.0
 
-    # 1. Funding Rate
     try:
         fr_res = requests.get(f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex", params={"symbol": symbol}, timeout=3).json()
         fr_pct = float(fr_res.get("lastFundingRate", 0)) * 100
     except Exception:
         pass
 
-    # 2. Open Interest
     try:
         oi_res = requests.get(f"{BINANCE_FUTURES_URL}/fapi/v1/openInterest", params={"symbol": symbol}, timeout=3).json()
         oi_amount = float(oi_res.get("openInterest", 0))
@@ -144,7 +149,6 @@ def get_futures_market_metrics(symbol):
     except Exception:
         pass
 
-    # 3. Top Trader Long/Short Ratio
     try:
         ls_res = requests.get(f"{BINANCE_FUTURES_URL}/futures/data/topLongShortPositionRatio", params={"symbol": symbol, "period": "5m", "limit": 1}, timeout=3).json()
         if isinstance(ls_res, list) and len(ls_res) > 0:
@@ -155,14 +159,8 @@ def get_futures_market_metrics(symbol):
 
     return fr_pct, oi_usdt, top_long_pct, top_short_pct
 
-# ==================== TEKNİK ANALİZ (KAPANMIŞ MUM KONTROLÜ) ====================
+# ==================== TEKNİK ANALİZ (KAPANMIŞ MUM VE MARJİN KONTROLÜ) ====================
 def check_ema_conditions(symbol, interval, market_type):
-    """
-    1. EMA 20 > EMA 50
-    2. Kapanış Fiyatı > EMA 20 ve Kapanış Fiyatı > EMA 50
-    3. Fiyat EMA 200'ü tamamlanmış mumda yukarı kesti mi?
-    (Not: İğne atmaları engellemek için iloc[-2] yani tam kapunan mum kullanılmıştır)
-    """
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
 
@@ -172,7 +170,7 @@ def check_ema_conditions(symbol, interval, market_type):
         res = requests.get(url, params=params, timeout=4).json()
 
         if not isinstance(res, list) or len(res) < 205:
-            return False, 0, 0, 0, 0
+            return False, 0, 0, 0, 0, 0
 
         df = pd.DataFrame(res, columns=[
             'time', 'open', 'high', 'low', 'close', 'volume',
@@ -186,9 +184,7 @@ def check_ema_conditions(symbol, interval, market_type):
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        # Kapanmış mumlar üzerinden değerlendirme yapılıyor:
-        # iloc[-2] = Tamamlanmış/Kapanmış son mum
-        # iloc[-3] = Ondan bir önceki kapanmış mum
+        # Kapanmış mumlar (iloc[-2] = Son kapanan mum, iloc[-3] = Ondan önceki)
         curr_close = df['close'].iloc[-2]
         prev_close = df['close'].iloc[-3]
 
@@ -197,32 +193,48 @@ def check_ema_conditions(symbol, interval, market_type):
         curr_ema200 = df['ema200'].iloc[-2]
         prev_ema200 = df['ema200'].iloc[-3]
 
+        # EMA 200'ün ne kadar üzerinde kapatmış? (% hesabı)
+        breakout_pct = ((curr_close - curr_ema200) / curr_ema200) * 100
+
         c1 = curr_ema20 > curr_ema50
         c2 = (curr_close > curr_ema20) and (curr_close > curr_ema50)
         c3 = (prev_close <= prev_ema200) and (curr_close > curr_ema200)
+        
+        # Sadece EMA 200 üstünde belirlediğimiz oranda (%0.15+) net kapanış yapmışsa kabul et
+        c4 = breakout_pct >= MIN_BREAKOUT_PCT  
 
-        if c1 and c2 and c3:
-            return True, curr_close, curr_ema20, curr_ema50, curr_ema200
+        if c1 and c2 and c3 and c4:
+            return True, curr_close, curr_ema20, curr_ema50, curr_ema200, breakout_pct
 
-        return False, 0, 0, 0, 0
+        return False, 0, 0, 0, 0, 0
 
     except Exception:
-        return False, 0, 0, 0, 0
+        return False, 0, 0, 0, 0, 0
 
 # ==================== TARAMA YÜRÜTÜCÜ ====================
 def scan_market(pairs, interval):
     match_count = 0
+    now = time.time()
+
     for coin in pairs:
         symbol = coin['symbol']
         volume_24h = coin['volume_24h']
         market_type = coin['market_type']
 
+        # COOLDOWN (TEKRAR SİNYAL ENGELİ) KONTROLÜ
+        signal_key = f"{symbol}_{market_type}"
+        if signal_key in SENT_SIGNALS:
+            last_sent_time = SENT_SIGNALS[signal_key]
+            if (now - last_sent_time) < (COOLDOWN_MINUTES * 60):
+                continue
+
         time.sleep(0.04)
 
-        is_match, price, ema20, ema50, ema200 = check_ema_conditions(symbol, interval, market_type)
+        is_match, price, ema20, ema50, ema200, breakout_pct = check_ema_conditions(symbol, interval, market_type)
 
         if is_match:
             match_count += 1
+            SENT_SIGNALS[signal_key] = now  # Sinyal zamanını hafızaya al
             interval_label = INTERVAL_LABELS.get(interval, interval)
             
             if market_type == "FUTURES":
@@ -245,23 +257,19 @@ def scan_market(pairs, interval):
                 )
                 trade_link = f"https://www.binance.com/en/trade/{symbol}"
 
+            # Mesaj şablonundan EMA detay satırları kaldırıldı
             msg = (
-                f"🎯 *EMA 200 YUKARI KESİŞİM SİNYALİ (KAPANIŞ ONAYLI)*\n"
+                f"🎯 *EMA 200 NET YUKARI KESİŞİM SİNYALİ*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
-                f"💵 *Kapanış Fiyatı:* `${price}`\n\n"
-                f"📈 *Teknik Göstergeler:*\n"
-                f"• *EMA 20:* `${ema20:,.4f}`\n"
-                f"• *EMA 50:* `${ema50:,.4f}`\n"
-                f"• *EMA 200:* `${ema200:,.4f}`\n"
-                f"✅ *Kapanış > EMA 20 > EMA 50*\n"
-                f"🚀 *Mum Kapanışı EMA 200 Üzerinde Gerçekleşti!*\n\n"
+                f"💵 *Kapanış Fiyatı:* `${price}`\n"
+                f"📐 *EMA 200 Üstü Fark:* `+%{breakout_pct:.2f}`\n\n"
                 f"{market_details}\n"
                 f"🔗 [Binance {market_type.capitalize()} Trade]({trade_link})"
             )
 
             send_telegram_msg(msg)
-            print(f"-> {market_type} SİNYALİ: {symbol} [{interval_label}] - Kapanış Fiyatı: ${price}", flush=True)
+            print(f"-> {market_type} SİNYALİ: {symbol} [{interval_label}] - Kapanış: ${price} (+%{breakout_pct:.2f})", flush=True)
 
     return match_count
 
@@ -285,7 +293,12 @@ if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
-    send_telegram_msg(f"🟢 *Çift Piyasa EMA Tarayıcısı Aktif!*\n⏱️ *Taranan Zaman Dilimi:* `{label}`\nKapsam: SPOT & FUTURES\n✅ *Sinyal Modu:* Mum Kapanış Onaylı")
+    send_telegram_msg(
+        f"🟢 *Çift Piyasa EMA Tarayıcısı Aktif!*\n"
+        f"⏱️ *Zaman Dilimi:* `{label}`\n"
+        f"🎯 *Minimum Kırılım Marjı:* `%{MIN_BREAKOUT_PCT}`\n"
+        f"⏳ *Sinyal Bekleme Süresi (Cooldown):* `{COOLDOWN_MINUTES} Dakika`"
+    )
 
     while True:
         try:
