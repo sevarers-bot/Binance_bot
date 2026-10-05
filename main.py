@@ -34,7 +34,7 @@ CHAT_ID = "-1004481336360"  # Grup ID'niz
 # MANUEL ZAMAN DİLİMİ AYARI
 # Seçenekler: "1d" (Günlük), "4h" (4 Saatlik), "1h" (1 Saatlik), "15m" (15 Dakikalık), "5m" (5 Dakikalık)
 # --------------------------------------------------------------------------
-SCAN_INTERVAL = "15m"  
+SCAN_INTERVAL = "1h"  
 
 # TESTERE ENGELLEME FİLTRESİ: Son mumdan önceki kaç mum KESİNLİKLE EMA 200 altında kalmış olmalı?
 # (Bu sayede 12:00 gibi dipten gelen ilk kırılımları yakalar, 14:15 gibi tepedeki git-gelleri engeller)
