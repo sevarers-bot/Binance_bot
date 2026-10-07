@@ -10,7 +10,7 @@ from threading import Thread
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ==================== WEB SUNUCUSU (Railway / Render Keep-Alive) ====================
+# ==================== WEB SUNUCUSU (Keep-Alive) ====================
 app = Flask('')
 
 @app.route('/')
@@ -28,30 +28,19 @@ def keep_alive():
 
 # ==================== KULLANICI AYARLARI ====================
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
-CHAT_ID = "-1004481336360"  # Grup ID'niz
+CHAT_ID = "-1004481336360"
 
-# --------------------------------------------------------------------------
-# MANUEL ZAMAN DİLİMİ AYARI
-# Seçenekler: "1d" (Günlük), "4h" (4 Saatlik), "1h" (1 Saatlik), "15m" (15 Dakikalık), "5m" (5 Dakikalık)
-# --------------------------------------------------------------------------
 SCAN_INTERVAL = "15m"  
 
-# FİLTRE 1: Kırılım öncesi kaç mum KESİNLİKLE EMA 200 altında dip yapmış olmalı?
-DIP_LOOKBACK_BARS = 15  
-
-# FİLTRE 2: EMA 200'e re-test/dokunuş araması yapılacak son kaç mum kontrol edilsin?
-RETEST_LOOKBACK_BARS = 5  
-
-# FİLTRE 3: En az kaç USDT 24S hacimli coinler taransın
+DIP_LOOKBACK_BARS = 15       # Kırılım öncesi EMA altında dip süresi
+RETEST_LOOKBACK_BARS = 5     # EMA'ya dokunma penceresi
 MIN_24H_VOLUME_USDT = 10_000_000   
-
-# FİLTRE 4: Aynı coin için tekrar bildirim atılmadan önce geçmesi gereken süre (Dakika Cinsinden)
+MIN_BREAKOUT_MARGIN_PCT = 0.12  # Yeşil mumun EMA200 üzerinde yapması gereken min % marj
 COOLDOWN_MINUTES = 60  
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# Hafıza: Aynı coine sürekli bildirim atmamak için gönderim zamanlarını saklar
 SENT_SIGNALS = {}
 
 INTERVAL_LABELS = {
@@ -162,7 +151,7 @@ def get_futures_market_metrics(symbol):
 
     return fr_pct, oi_usdt, top_long_pct, top_short_pct
 
-# ==================== TEKNİK ANALİZ (EMA 200 RE-TEST & YUTAN BOĞA) ====================
+# ==================== TEKNİK ANALİZ (FİLTRELENMİŞ KONTROL) ====================
 def check_ema_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
@@ -189,9 +178,8 @@ def check_ema_conditions(symbol, interval, market_type):
         # EMA 200 Hesaplaması
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        # Mum İndeksleri:
-        # iloc[-2] = Son tamamlanan / kapanan mum (Yeşil Yutan Mum)
-        # iloc[-3] = Bir önceki mum (Kırmızı Mum)
+        # iloc[-2] = Son tamamlanan mum (Yeşil Yutan)
+        # iloc[-3] = Önceki mum (Kırmızı)
         curr_open = df['open'].iloc[-2]
         curr_close = df['close'].iloc[-2]
         curr_ema200 = df['ema200'].iloc[-2]
@@ -201,39 +189,37 @@ def check_ema_conditions(symbol, interval, market_type):
         prev_ema200 = df['ema200'].iloc[-3]
 
         # -------------------------------------------------------------
-        # ADIM 1: YUTAN BOĞA (BULLISH ENGULFING) ŞARTI (EMA 200 ÜZERİNDE)
+        # ADIM 1: NET YUTAN BOĞA & EMA 200 MARJİNAL KAPANIS
         # -------------------------------------------------------------
-        # Bir önceki mum Kırmızı olmalı
-        is_prev_red = prev_close < prev_open  
-        # Son kapanan mum Yeşil olmalı
-        is_curr_green = curr_close > curr_open  
-        # Son yeşil mumun kapanışı, önceki kırmızı mumun açılışını yutmalı
-        is_engulfing = (curr_close >= prev_open) and (curr_open <= prev_close)
-        # Bütün bu yapı EMA 200 üzerinde gerçekleşmiş olmalı
-        is_above_ema = (curr_close > curr_ema200) and (prev_close >= prev_ema200 * 0.998)
+        is_prev_red = prev_close < prev_open
+        is_curr_green = curr_close > curr_open
+        
+        # Gövde tamamen diğer kırmızı gövdeyi sarmalı
+        is_engulfing = (curr_close > prev_open) and (curr_open <= prev_close)
+        
+        # Kapanış EMA 200'ün net %MIN_BREAKOUT_MARGIN_PCT üzerinde olmalı (Sahte fitil kapanışlarını engeller)
+        margin_pct = ((curr_close - curr_ema200) / curr_ema200) * 100
+        is_clear_breakout = margin_pct >= MIN_BREAKOUT_MARGIN_PCT
 
-        cond_engulfing = is_prev_red and is_curr_green and is_engulfing and is_above_ema
-
-        if not cond_engulfing:
+        if not (is_prev_red and is_curr_green and is_engulfing and is_clear_breakout):
             return False, 0, 0
 
         # -------------------------------------------------------------
-        # ADIM 2: EMA 200'E DOKUNMA / RE-TEST ŞARTI
+        # ADIM 2: RE-TEST DOKUNUŞU (EMA 200 TEMASI)
         # -------------------------------------------------------------
-        # Son 'RETEST_LOOKBACK_BARS' kadar mum içerisinde fiyatın en düşüğü (low) EMA 200'e dokunmuş mu? (%0.2 toleranslı)
+        # Son birkaç mum içinde en düşük seviye EMA 200'e yaklaşmış/dokunmuş olmalı
         recent_lows = df['low'].iloc[-2 - RETEST_LOOKBACK_BARS : -1]
         recent_ema200s = df['ema200'].iloc[-2 - RETEST_LOOKBACK_BARS : -1]
         
-        # En az 1 mumun en düşük seviyesi EMA 200'ün hizasına (%0.2 çevresine) sarkmış olmalı
-        touched_ema = ((recent_lows <= recent_ema200s * 1.002) & (recent_lows >= recent_ema200s * 0.992)).any()
+        touched_ema = ((recent_lows <= recent_ema200s * 1.0015) & (recent_lows >= recent_ema200s * 0.993)).any()
 
         if not touched_ema:
             return False, 0, 0
 
         # -------------------------------------------------------------
-        # ADIM 3: UZUN SÜRE EMA 200 ALTINDA KALMIŞ OLMA ŞARTI (DİP AKÜMÜLASYONU)
+        # ADIM 3: GERÇEK DİP AKÜMÜLASYONU (UZUN SÜRE EMA 200 ALTINDA KALMA)
         # -------------------------------------------------------------
-        # Son re-test ve kırılım hareketinden önceki 'DIP_LOOKBACK_BARS' kadar mumun kapanışları EMA 200 altında olmalı
+        # Testere hareketinde sürekli alt-üst yapıldığı için geriye dönük kapanışların EMA200 altında kaldığı doğrulanır
         start_idx = -2 - RETEST_LOOKBACK_BARS - DIP_LOOKBACK_BARS
         end_idx = -2 - RETEST_LOOKBACK_BARS
 
@@ -242,7 +228,7 @@ def check_ema_conditions(symbol, interval, market_type):
 
         was_long_time_below = (past_closes < past_ema200s).all()
 
-        if cond_engulfing and touched_ema and was_long_time_below:
+        if was_long_time_below:
             return True, curr_close, curr_ema200
 
         return False, 0, 0
@@ -260,7 +246,6 @@ def scan_market(pairs, interval):
         volume_24h = coin['volume_24h']
         market_type = coin['market_type']
 
-        # COOLDOWN KONTROLÜ
         signal_key = f"{symbol}_{market_type}"
         if signal_key in SENT_SIGNALS:
             last_sent_time = SENT_SIGNALS[signal_key]
@@ -273,7 +258,7 @@ def scan_market(pairs, interval):
 
         if is_match:
             match_count += 1
-            SENT_SIGNALS[signal_key] = now  # Sinyal zamanını hafızaya al
+            SENT_SIGNALS[signal_key] = now
             interval_label = INTERVAL_LABELS.get(interval, interval)
             
             if market_type == "FUTURES":
@@ -302,7 +287,7 @@ def scan_market(pairs, interval):
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Kapanış Fiyatı:* `${price}`\n"
                 f"📈 *EMA 200 Fiyatı:* `${ema200:.4f}`\n"
-                f"🎯 *Formasyon:* `EMA 200 Dokunuşu + Yutan Yeşil Mum Onayı`\n\n"
+                f"🎯 *Formasyon:* `Net EMA 200 Üstü Kapanış + Engulfing Onayı`\n\n"
                 f"{market_details}\n"
                 f"🔗 [Binance {market_type.capitalize()} Trade]({trade_link})"
             )
@@ -317,11 +302,9 @@ def run_scanner():
     interval_label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
     print(f"[{now_str}] Spot ve Futures Taraması Başlatıldı | Zaman Dilimi: {interval_label}...", flush=True)
 
-    # 1. Spot Taraması
     spot_pairs = get_spot_usdt_pairs()
     spot_matches = scan_market(spot_pairs, SCAN_INTERVAL)
 
-    # 2. Futures Taraması
     futures_pairs = get_futures_usdt_pairs()
     futures_matches = scan_market(futures_pairs, SCAN_INTERVAL)
 
@@ -336,7 +319,7 @@ if __name__ == "__main__":
         f"🟢 *EMA 200 Re-test & Yutan Boğa Tarayıcısı Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
         f"🛡️ *Dip Şartı:* `Minimum {DIP_LOOKBACK_BARS} Mum EMA 200 Altında`\n"
-        f"📍 *Re-test Şartı:* `EMA 200 Teması + Yutan Yeşil Mum`\n"
+        f"📍 *Kırılım Şartı:* `EMA 200 Üzerinde En Az %{MIN_BREAKOUT_MARGIN_PCT} Kapanış + Yutan Mum`\n"
         f"⏳ *Sinyal Bekleme Süresi:* `{COOLDOWN_MINUTES} Dakika`"
     )
 
@@ -346,4 +329,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
 
-        time.sleep(300) # 5 dakikada bir tekrarlar
+        time.sleep(300)
