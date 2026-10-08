@@ -27,32 +27,35 @@ def keep_alive():
     t.start()
 
 # ==================== MANUEL AYARLANABİLİR PARAMETRELER ====================
+# Bot Father'dan aldığınız Bot Token'ınızı buraya girin:
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
+
+# SinyalBotE Grubu Chat ID'si:
 CHAT_ID = "-1004481336360"
 
 # 1. Zaman Dilimi Ayarı ("5m", "15m", "1h", "4h" vb.)
 SCAN_INTERVAL = "5m"  
 
 # 2. Hacim Kıyaslaması İçin Geriye Dönük Mum Sayısı
-LOOKBACK_BARS = 10  
+LOOKBACK_BARS = 12  
 
 # 3. Hacim Kat Çarpanı (Örn: Önceki 10 mumun ortalamasının 4 katı)
-VOLUME_MULTIPLIER = 4.0  
+VOLUME_MULTIPLIER = 6.0  
 
 # 4. Minimum RSI Eşiği
-RSI_THRESHOLD = 50.0  
+RSI_THRESHOLD = 55.0  
 
 # 5. RSI Periyodu
 RSI_PERIOD = 14  
 
 # Genel Filtreler
-MIN_24H_VOLUME_USDT = 5_000_000  # Tarama yapılacak min 24s hacim (USDT)
-COOLDOWN_MINUTES = 30            # Aynı coine tekrar sinyal atması için geçmesi gereken süre (dk)
+MIN_24H_VOLUME_USDT = 100_000_000  # Tarama yapılacak min 24s hacim (USDT)
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-SENT_SIGNALS = {}
+# Her coin için en son sinyal gönderilen MUM ZAMANINI (Timestamp) saklar
+LAST_SIGNAL_CANDLE_TIME = {}
 
 INTERVAL_LABELS = {
     "1d": "1 Günlük (1D)",
@@ -146,13 +149,12 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
 
     try:
         url = f"{base_url}{endpoint}"
-        # Yeterli RSI ve Hacim verisi için limit
         fetch_limit = LOOKBACK_BARS + RSI_PERIOD + 20
         params = {"symbol": symbol, "interval": interval, "limit": fetch_limit}
         res = requests.get(url, params=params, timeout=4).json()
 
         if not isinstance(res, list) or len(res) < fetch_limit - 5:
-            return False, 0, 0, 0, 0
+            return False, 0, 0, 0, 0, 0
 
         df = pd.DataFrame(res, columns=[
             'time', 'open', 'high', 'low', 'close', 'volume',
@@ -167,6 +169,7 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         df['rsi'] = calculate_rsi(df['close'], period=RSI_PERIOD)
 
         # iloc[-2] = Son KAPANAN mum
+        last_candle_time = df['time'].iloc[-2]
         last_open = df['open'].iloc[-2]
         last_close = df['close'].iloc[-2]
         last_vol = df['volume'].iloc[-2]
@@ -175,14 +178,14 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         # 1. ŞART: Mum Rengi YEŞİL olmalı
         is_green = last_close > last_open
         if not is_green:
-            return False, 0, 0, 0, 0
+            return False, 0, 0, 0, 0, last_candle_time
 
         # 2. ŞART: Hacim, önceki LOOKBACK_BARS kadar mumun ortalamasından VOLUME_MULTIPLIER kat fazla olmalı
         prev_volumes = df['volume'].iloc[-2 - LOOKBACK_BARS : -2]
         avg_volume = prev_volumes.mean()
 
         if avg_volume == 0:
-            return False, 0, 0, 0, 0
+            return False, 0, 0, 0, 0, last_candle_time
 
         vol_ratio = last_vol / avg_volume
         is_volume_spike = vol_ratio >= VOLUME_MULTIPLIER
@@ -191,36 +194,37 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         is_rsi_valid = last_rsi >= RSI_THRESHOLD
 
         if is_volume_spike and is_rsi_valid:
-            return True, last_close, last_rsi, vol_ratio, avg_volume
+            return True, last_close, last_rsi, vol_ratio, avg_volume, last_candle_time
 
-        return False, 0, 0, 0, 0
+        return False, 0, 0, 0, 0, last_candle_time
 
     except Exception:
-        return False, 0, 0, 0, 0
+        return False, 0, 0, 0, 0, 0
 
 # ==================== TARAMA YÜRÜTÜCÜ ====================
 def scan_market(pairs, interval):
     match_count = 0
-    now = time.time()
 
     for coin in pairs:
         symbol = coin['symbol']
         volume_24h = coin['volume_24h']
         market_type = coin['market_type']
 
-        signal_key = f"{symbol}_{market_type}"
-        if signal_key in SENT_SIGNALS:
-            last_sent_time = SENT_SIGNALS[signal_key]
-            if (now - last_sent_time) < (COOLDOWN_MINUTES * 60):
-                continue
-
         time.sleep(0.03)
 
-        is_match, price, rsi, vol_ratio, avg_vol = check_volume_rsi_conditions(symbol, interval, market_type)
+        is_match, price, rsi, vol_ratio, avg_vol, candle_time = check_volume_rsi_conditions(symbol, interval, market_type)
 
         if is_match:
+            signal_key = f"{symbol}_{market_type}"
+            
+            # Aynı mum kapanışında daha önce sinyal atıldıysa tekrar atma
+            if signal_key in LAST_SIGNAL_CANDLE_TIME:
+                if LAST_SIGNAL_CANDLE_TIME[signal_key] == candle_time:
+                    continue
+
+            # Yeni mumda şartlar uyarsa sinyali gönder ve zamanı kaydet
+            LAST_SIGNAL_CANDLE_TIME[signal_key] = candle_time
             match_count += 1
-            SENT_SIGNALS[signal_key] = now
             interval_label = INTERVAL_LABELS.get(interval, interval)
             
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
@@ -238,7 +242,7 @@ def scan_market(pairs, interval):
             )
 
             send_telegram_msg(msg)
-            print(f"-> SİNYAL: {symbol} [{market_type}] - Hacim: {vol_ratio:.1f}x - RSI: {rsi:.1f}", flush=True)
+            print(f"-> SİNYAL: {symbol} [{market_type}] - Hacim: {vol_ratio:.1f}x - RSI: {rsi:.1f} (Mum: {candle_time})", flush=True)
 
     return match_count
 
@@ -264,7 +268,8 @@ if __name__ == "__main__":
         f"🟢 *Hacim Patlaması & RSI Tarayıcı Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
         f"📊 *Hacim Şartı:* `Son {LOOKBACK_BARS} mum ortalamasının {VOLUME_MULTIPLIER}x katı (Yeşil Mum)`\n"
-        f"📈 *RSI Şartı:* `>= {RSI_THRESHOLD}`"
+        f"📈 *RSI Şartı:* `>= {RSI_THRESHOLD}`\n"
+        f"🔒 *Tekrar Engelleme:* `Aynı mumda 2. sinyal atılmaz`"
     )
 
     while True:
@@ -273,5 +278,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
 
-        # 5 dakikalık mumlar için 60-120 saniyede bir taramak idealdir
-        time.sleep(60)
+        time.sleep(30)
