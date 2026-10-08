@@ -28,7 +28,7 @@ def keep_alive():
 
 # ==================== MANUEL AYARLANABİLİR PARAMETRELER ====================
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
-CHAT_ID = "YOUR_CHAT_ID"
+CHAT_ID = "-1004481336360"
 
 # 1. Zaman Dilimi Ayarı ("5m", "15m", "1h", "4h" vb.)
 SCAN_INTERVAL = "5m"  
