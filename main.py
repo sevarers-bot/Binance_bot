@@ -32,10 +32,10 @@ CHAT_ID = "-1004481336360"
 
 SCAN_INTERVAL = "15m"  
 
-DIP_LOOKBACK_BARS = 15       # Kırılım öncesi EMA altında dip süresi
-RETEST_LOOKBACK_BARS = 5     # EMA'ya dokunma penceresi
+DIP_LOOKBACK_BARS = 12          # Kırılım öncesi EMA altında kalma süresi
+RETEST_LOOKBACK_BARS = 6        # Re-test için geriye dönük arama penceresi
 MIN_24H_VOLUME_USDT = 10_000_000   
-MIN_BREAKOUT_MARGIN_PCT = 0.12  # Yeşil mumun EMA200 üzerinde yapması gereken min % marj
+MIN_BREAKOUT_MARGIN_PCT = 0.15     # Kapanışın EMA200 üzerinde yapması gereken min % marj
 COOLDOWN_MINUTES = 60  
 
 BINANCE_SPOT_URL = "https://api.binance.com"
@@ -151,7 +151,7 @@ def get_futures_market_metrics(symbol):
 
     return fr_pct, oi_usdt, top_long_pct, top_short_pct
 
-# ==================== TEKNİK ANALİZ (FİLTRELENMİŞ KONTROL) ====================
+# ==================== TEKNİK ANALİZ (KATI RE-TEST VE ENGULFING) ====================
 def check_ema_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
@@ -178,8 +178,8 @@ def check_ema_conditions(symbol, interval, market_type):
         # EMA 200 Hesaplaması
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        # iloc[-2] = Son tamamlanan mum (Yeşil Yutan)
-        # iloc[-3] = Önceki mum (Kırmızı)
+        # iloc[-2] = Son tamamlanan mum (Yeşil Yutan Onay Mumu)
+        # iloc[-3] = Önceki mum (Kırmızı Geri Çekilme Mumu)
         curr_open = df['open'].iloc[-2]
         curr_close = df['close'].iloc[-2]
         curr_ema200 = df['ema200'].iloc[-2]
@@ -189,39 +189,39 @@ def check_ema_conditions(symbol, interval, market_type):
         prev_ema200 = df['ema200'].iloc[-3]
 
         # -------------------------------------------------------------
-        # ADIM 1: NET YUTAN BOĞA & EMA 200 MARJİNAL KAPANIS
+        # SHART 1: EMA 200 ÜZERİNDE NET YUTAN BOĞA (BULLISH ENGULFING)
         # -------------------------------------------------------------
-        is_prev_red = prev_close < prev_open
-        is_curr_green = curr_close > curr_open
+        is_prev_red = prev_close < prev_open               # Önceki mum Kırmızı
+        is_curr_green = curr_close > curr_open             # Son mum Yeşil
+        is_engulfing = (curr_close > prev_open) and (curr_open <= prev_close) # Yutma Şartı
         
-        # Gövde tamamen diğer kırmızı gövdeyi sarmalı
-        is_engulfing = (curr_close > prev_open) and (curr_open <= prev_close)
-        
-        # Kapanış EMA 200'ün net %MIN_BREAKOUT_MARGIN_PCT üzerinde olmalı (Sahte fitil kapanışlarını engeller)
+        # Son mumun KAPANISI kesinlikle EMA200'ün en az %MIN_BREAKOUT_MARGIN_PCT üzerinde olmalı
         margin_pct = ((curr_close - curr_ema200) / curr_ema200) * 100
-        is_clear_breakout = margin_pct >= MIN_BREAKOUT_MARGIN_PCT
+        is_above_ema = margin_pct >= MIN_BREAKOUT_MARGIN_PCT
 
-        if not (is_prev_red and is_curr_green and is_engulfing and is_clear_breakout):
+        if not (is_prev_red and is_curr_green and is_engulfing and is_above_ema):
             return False, 0, 0
 
         # -------------------------------------------------------------
-        # ADIM 2: RE-TEST DOKUNUŞU (EMA 200 TEMASI)
+        # SHART 2: EMA 200'E SAĞLIKLI DOKUNMA / DİP YAPIP DESTEK ALMA (RE-TEST)
         # -------------------------------------------------------------
-        # Son birkaç mum içinde en düşük seviye EMA 200'e yaklaşmış/dokunmuş olmalı
-        recent_lows = df['low'].iloc[-2 - RETEST_LOOKBACK_BARS : -1]
-        recent_ema200s = df['ema200'].iloc[-2 - RETEST_LOOKBACK_BARS : -1]
+        # Re-test mumu (yani kırmızı geri çekilme mumu) EMA200'e yaklaşmış veya değmiş olmalı
+        # En düşük seviyesi (low) EMA 200 hizanında/yakınında olmalı ancak gövdesi tamamen çakılmamış olmalı
+        retest_low = df['low'].iloc[-3]
+        retest_ema = df['ema200'].iloc[-3]
         
-        touched_ema = ((recent_lows <= recent_ema200s * 1.0015) & (recent_lows >= recent_ema200s * 0.993)).any()
+        # Kırmızı mumun en düşüğü EMA 200'ün %0.4 çevresinde mi?
+        valid_retest_touch = (retest_low <= retest_ema * 1.004) and (retest_low >= retest_ema * 0.992)
 
-        if not touched_ema:
+        if not valid_retest_touch:
             return False, 0, 0
 
         # -------------------------------------------------------------
-        # ADIM 3: GERÇEK DİP AKÜMÜLASYONU (UZUN SÜRE EMA 200 ALTINDA KALMA)
+        # SHART 3: DİP AKÜMÜLASYONU (KIRILIM ÖNCESİ UZUN SÜRE EMA 200 ALTINDA KALMA)
         # -------------------------------------------------------------
-        # Testere hareketinde sürekli alt-üst yapıldığı için geriye dönük kapanışların EMA200 altında kaldığı doğrulanır
-        start_idx = -2 - RETEST_LOOKBACK_BARS - DIP_LOOKBACK_BARS
-        end_idx = -2 - RETEST_LOOKBACK_BARS
+        # Re-test ve kırılımdan önceki DIP_LOOKBACK_BARS kadar mumun kapanışları EMA 200 altında olmalı
+        start_idx = -3 - RETEST_LOOKBACK_BARS - DIP_LOOKBACK_BARS
+        end_idx = -3 - RETEST_LOOKBACK_BARS
 
         past_closes = df['close'].iloc[start_idx : end_idx]
         past_ema200s = df['ema200'].iloc[start_idx : end_idx]
@@ -287,7 +287,7 @@ def scan_market(pairs, interval):
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Kapanış Fiyatı:* `${price}`\n"
                 f"📈 *EMA 200 Fiyatı:* `${ema200:.4f}`\n"
-                f"🎯 *Formasyon:* `Net EMA 200 Üstü Kapanış + Engulfing Onayı`\n\n"
+                f"🎯 *Formasyon:* `Sağlıklı EMA200 Re-testi + Yutan Onay Mumu`\n\n"
                 f"{market_details}\n"
                 f"🔗 [Binance {market_type.capitalize()} Trade]({trade_link})"
             )
@@ -319,7 +319,7 @@ if __name__ == "__main__":
         f"🟢 *EMA 200 Re-test & Yutan Boğa Tarayıcısı Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
         f"🛡️ *Dip Şartı:* `Minimum {DIP_LOOKBACK_BARS} Mum EMA 200 Altında`\n"
-        f"📍 *Kırılım Şartı:* `EMA 200 Üzerinde En Az %{MIN_BREAKOUT_MARGIN_PCT} Kapanış + Yutan Mum`\n"
+        f"📍 *Kırılım Şartı:* `Sağlıklı Re-Test + %{MIN_BREAKOUT_MARGIN_PCT} EMA Üstü Yutan Mum`\n"
         f"⏳ *Sinyal Bekleme Süresi:* `{COOLDOWN_MINUTES} Dakika`"
     )
 
