@@ -295,4 +295,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
 
-        time.sleep(30)
+        time.sleep(10)
