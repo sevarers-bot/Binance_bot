@@ -32,7 +32,7 @@ CHAT_ID = "-1004481336360"
 
 SCAN_INTERVAL = "5m"        # Zaman Dilimi
 LOOKBACK_BARS = 20         # Ortalama hacim için bakılacak mum sayısı
-VOLUME_MULTIPLIER = 3.0    # Hacim kat çarpanı
+VOLUME_MULTIPLIER = 4.0    # Hacim kat çarpanı
 RSI_THRESHOLD = 50.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
 MIN_24H_VOLUME_USDT = 100_000_000  # Minimum 24s Hacim (USDT)
@@ -40,7 +40,11 @@ MIN_24H_VOLUME_USDT = 100_000_000  # Minimum 24s Hacim (USDT)
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
+# Aynı mumda tekrar sinyal atılmasını önlemek için hafıza
 LAST_SIGNAL_CANDLE_TIME = {}
+
+# Sabit coinler ve pariteler (Hacim patlaması aramamak için)
+STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "EURUSDT", "GBPUSDT", "DAIUSDT", "AEURUSDT"]
 
 INTERVAL_LABELS = {
     "1d": "1 Günlük (1D)",
@@ -69,26 +73,19 @@ def send_telegram_msg(message):
 
 # ==================== LONG/SHORT & FUNDING RATE BİLGİSİ ÇEKME ====================
 def get_futures_metrics(symbol):
-    """
-    Binance Futures API'den ilgili coin için:
-    - Long/Short hesap oranını (%)
-    - Anlık Funding Rate (FR %) değerini çeker.
-    """
     funding_rate_str = "N/A"
     long_short_str = "N/A"
 
     try:
-        # 1. Funding Rate (FR) Çekme
         fr_url = f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex"
         fr_res = requests.get(fr_url, params={"symbol": symbol}, timeout=4).json()
         if isinstance(fr_res, dict) and "lastFundingRate" in fr_res:
             fr_val = float(fr_res["lastFundingRate"]) * 100
             funding_rate_str = f"%{fr_val:+.4f}"
-    except Exception as e:
-        print(f"FR Çekme Hatası ({symbol}): {e}", flush=True)
+    except Exception:
+        pass
 
     try:
-        # 2. Long/Short Global Account Ratio Çekme
         ls_url = f"{BINANCE_FUTURES_URL}/futures/data/globalLongShortAccountRatio"
         ls_params = {"symbol": symbol, "period": "5m", "limit": 1}
         ls_res = requests.get(ls_url, params=ls_params, timeout=4).json()
@@ -96,12 +93,12 @@ def get_futures_metrics(symbol):
             long_account = float(ls_res[0].get("longAccount", 0)) * 100
             short_account = float(ls_res[0].get("shortAccount", 0)) * 100
             long_short_str = f"%{long_account:.1f} L / %{short_account:.1f} S"
-    except Exception as e:
-        print(f"L/S Çekme Hatası ({symbol}): {e}", flush=True)
+    except Exception:
+        pass
 
     return long_short_str, funding_rate_str
 
-# ==================== SEMBOL LİSTELERİ ====================
+# ==================== SEMBOL LİSTELERİ (FİLTRELİ) ====================
 def get_spot_usdt_pairs():
     try:
         url = f"{BINANCE_SPOT_URL}/api/v3/ticker/24hr"
@@ -115,7 +112,7 @@ def get_spot_usdt_pairs():
             vol_24h = float(coin.get('quoteVolume', 0))
             price = float(coin.get('lastPrice', 0))
 
-            if symbol.endswith("USDT") and not any(x in symbol for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
+            if symbol.endswith("USDT") and symbol not in STABLE_COINS and not any(x in symbol for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
                 if vol_24h >= MIN_24H_VOLUME_USDT:
                     valid_pairs.append({
                         "symbol": symbol,
@@ -141,7 +138,7 @@ def get_futures_usdt_pairs():
             vol_24h = float(coin.get('quoteVolume', 0))
             price = float(coin.get('lastPrice', 0))
 
-            if symbol.endswith("USDT") and vol_24h >= MIN_24H_VOLUME_USDT:
+            if symbol.endswith("USDT") and symbol not in STABLE_COINS and vol_24h >= MIN_24H_VOLUME_USDT:
                 valid_pairs.append({
                     "symbol": symbol,
                     "price": price,
@@ -228,6 +225,7 @@ def scan_market(pairs, interval):
         is_match, price, rsi, vol_ratio, avg_vol, candle_time = check_volume_rsi_conditions(symbol, interval, market_type)
 
         if is_match:
+            # Piyasaya özel anahtar (Örn: BTCUSDT_SPOT ve BTCUSDT_FUTURES ayrı ayrı takip edilir)
             signal_key = f"{symbol}_{market_type}"
             
             if signal_key in LAST_SIGNAL_CANDLE_TIME:
@@ -238,8 +236,12 @@ def scan_market(pairs, interval):
             match_count += 1
             interval_label = INTERVAL_LABELS.get(interval, interval)
             
-            # Long/Short Oranı ve Funding Rate Bilgilerini Çek
-            ls_ratio, funding_rate = get_futures_metrics(symbol)
+            # Sadece Futures coinleri için L/S oranı ve FR çekilir
+            if market_type == "FUTURES":
+                ls_ratio, funding_rate = get_futures_metrics(symbol)
+                futures_info = f"⚖️ *Long / Short Oranı:* `{ls_ratio}`\n💸 *Funding Rate (FR):* `{funding_rate}`\n"
+            else:
+                futures_info = ""
 
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
 
@@ -251,14 +253,13 @@ def scan_market(pairs, interval):
                 f"📊 *Hacim Artışı:* `{vol_ratio:.1f}x` *(Son {LOOKBACK_BARS} mum ortalamasının)*\n"
                 f"📈 *RSI ({RSI_PERIOD}):* `{rsi:.2f}`\n"
                 f"🕯️ *Mum Tipi:* `Yeşil (Yükseliş)`\n"
-                f"⚖️ *Long / Short Oranı:* `{ls_ratio}`\n"
-                f"💸 *Funding Rate (FR):* `{funding_rate}`\n\n"
+                f"{futures_info}\n"
                 f"💰 *24S Hacim:* `${volume_24h:,.2f}`\n"
                 f"🔗 [Binance {market_type.capitalize()} İşlem]({trade_link})"
             )
 
             send_telegram_msg(msg)
-            print(f"-> SİNYAL: {symbol} [{market_type}] - Hacim: {vol_ratio:.1f}x - RSI: {rsi:.1f} - L/S: {ls_ratio} - FR: {funding_rate}", flush=True)
+            print(f"-> SİNYAL: {symbol} [{market_type}] - Hacim: {vol_ratio:.1f}x - RSI: {rsi:.1f}", flush=True)
 
     return match_count
 
@@ -285,7 +286,7 @@ if __name__ == "__main__":
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
         f"📊 *Hacim Şartı:* `Son {LOOKBACK_BARS} mum ortalamasının {VOLUME_MULTIPLIER}x katı (Yeşil Mum)`\n"
         f"📈 *RSI Şartı:* `>= {RSI_THRESHOLD}`\n"
-        f"📊 *Ek Göstergeler:* `Long/Short Oranı & Funding Rate (FR)`"
+        f"🔒 *Çift Sinyal Koruması:* `Aktif (Spot/Futures ayrıştırıldı)`"
     )
 
     while True:
