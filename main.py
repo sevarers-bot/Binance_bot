@@ -32,10 +32,10 @@ CHAT_ID = "-1004481336360"
 
 SCAN_INTERVAL = "5m"        # Zaman Dilimi
 LOOKBACK_BARS = 20         # Ortalama hacim için bakılacak mum sayısı
-VOLUME_MULTIPLIER = 6.0    # Hacim kat çarpanı
+VOLUME_MULTIPLIER = 3.0    # Hacim kat çarpanı
 RSI_THRESHOLD = 50.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
-MIN_24H_VOLUME_USDT = 200_000_000  # Minimum 24s Hacim (USDT)
+MIN_24H_VOLUME_USDT = 100_000_000  # Minimum 24s Hacim (USDT)
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
