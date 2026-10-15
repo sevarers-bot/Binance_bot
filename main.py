@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Referans Tepe Kırılımı & Hacim Patlaması Tarayıcısı Aktif!"
+    return "Adım Adım Durum Kontrollü EMA Strateji Botu Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -40,7 +40,11 @@ MIN_24H_VOLUME_USDT = 5_000_000  # Minimum 24s Hacim (USDT)
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-LAST_SIGNAL_CANDLE_TIME = {}
+# Her coin için aşama ve referans verilerini tutacağımız hafıza yapısı
+# States: "WAITING_FOR_CROSS", "WAITING_FOR_RETEST", "WAITING_FOR_BREAKOUT", "WAITING_FOR_RESET"
+COIN_STATE_TRACKER = {}
+COIN_REFERENCE_DATA = {} # Retest mumunun high değerini saklamak için
+
 STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "EURUSDT", "GBPUSDT", "DAIUSDT", "AEURUSDT"]
 
 INTERVAL_LABELS = {
@@ -143,19 +147,20 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# ==================== REFERANS TEPE KIRILIM STRATEJİSİ ====================
+# ==================== ADIM ADIM DURUM KONTROLLÜ STRATEJİ ====================
 def check_volume_rsi_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
+    state_key = f"{symbol}_{market_type}"
 
     try:
         url = f"{base_url}{endpoint}"
-        fetch_limit = 50  # Geçmişi taramak için yeterli mum derinliği
+        fetch_limit = 70
         params = {"symbol": symbol, "interval": interval, "limit": fetch_limit}
         res = requests.get(url, params=params, timeout=4).json()
 
-        if not isinstance(res, list) or len(res) < 30:
-            return False, 0, 0, 0, 0, 0
+        if not isinstance(res, list) or len(res) < 50:
+            return False, 0, 0, 0, 0
 
         df = pd.DataFrame(res, columns=[
             'time', 'open', 'high', 'low', 'close', 'volume',
@@ -168,65 +173,103 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         df['low'] = df['low'].astype(float)
         df['volume'] = df['volume'].astype(float)
 
-        # İndikatörler
         df['rsi'] = calculate_rsi(df['close'], period=RSI_PERIOD)
         df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
 
-        last_candle_time = df['time'].iloc[-2]
         curr_open = df['open'].iloc[-2]
         curr_close = df['close'].iloc[-2]
         curr_vol = df['volume'].iloc[-2]
         curr_rsi = df['rsi'].iloc[-2]
-
-        # 1. Şart: Son tamamlanan mum güçlü bir Yeşil Mum Olmalı
-        if curr_close <= curr_open:
-            return False, 0, 0, 0, 0, last_candle_time
-
-        # 2. Şart: Hacim Patlaması ve RSI Şartı
-        prev_volumes = df['volume'].iloc[-2 - LOOKBACK_BARS : -2]
-        avg_volume = prev_volumes.mean()
-        if avg_volume == 0:
-            return False, 0, 0, 0, 0, last_candle_time
-
-        vol_ratio = curr_vol / avg_volume
-        if vol_ratio < VOLUME_MULTIPLIER or curr_rsi < RSI_THRESHOLD:
-            return False, 0, 0, 0, 0, last_candle_time
-
-        # 3. Trend Güvencesi: Son 12 mum boyunca EMA 20, EMA 50'nin altına kesişim (death cross) yapmamış olmalı
-        recent_ema20 = df['EMA20'].iloc[-12:-1]
-        recent_ema50 = df['EMA50'].iloc[-12:-1]
-        if any(recent_ema20 < recent_ema50):
-            return False, 0, 0, 0, 0, last_candle_time
-
-        # 4. Geri Çekilme (Kare İçindeki Mum) Tespiti:
-        # Geriye doğru bakarak EMA 20 altına sarkma (kapanış) yapmış olan o ilk mumu buluyoruz.
-        found_pullback = False
-        target_index = -3
         
-        while target_index >= -15:
-            c_close = df['close'].iloc[target_index]
-            c_ema20 = df['EMA20'].iloc[target_index]
-            
-            if c_close < c_ema20:
-                found_pullback = True
-                break
-            target_index -= 1
+        current_ema20 = df['EMA20'].iloc[-2]
+        current_ema50 = df['EMA50'].iloc[-2]
+        prev_ema20 = df['EMA20'].iloc[-3]
+        prev_ema50 = df['EMA50'].iloc[-3]
 
-        if not found_pullback:
-            return False, 0, 0, 0, 0, last_candle_time
+        # Coinin mevcut durumu yoksa ilk aşamadan başlatıyoruz
+        current_state = COIN_STATE_TRACKER.get(state_key, "WAITING_FOR_CROSS")
 
-        # 5. Kırılım Onayı: Bulduğumuz o geri çekilme mumuunun EN YÜKSEK SEVİYESİ (`high`), 
-        # güncel yeşil mumun kapanışı (`curr_close`) tarafından yukarı yönlü kırılmış/geçilmiş olmalı.
-        reference_high_level = df['high'].iloc[target_index]
-        
-        if curr_close > reference_high_level:
-            return True, curr_close, curr_rsi, vol_ratio, avg_volume, last_candle_time
+        # --- ADIM 4: SİNYAL SONRASI SIFIRLANMA (RESET) KONTROLÜ ---
+        if current_state == "WAITING_FOR_RESET":
+            # EMA 20, EMA 50'nin altına inerse (Death Cross / Soğuma) her şey en başa döner
+            if current_ema20 < current_ema50:
+                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
+            return False, 0, 0, 0, 0
 
-        return False, 0, 0, 0, 0, last_candle_time
+        # --- ADIM 1: İLK KESİŞİM (GOLDEN CROSS) BEKLEME ---
+        if current_state == "WAITING_FOR_CROSS":
+            # Önceki mumda EMA20 <= EMA50 iken, şimdi EMA20 > EMA50 olduysa kesişim gerçekleşmiştir
+            is_just_crossed = (prev_ema20 <= prev_ema50) and (current_ema20 > current_ema50)
+            # Veya halihazırda yukarıda ve yeni bir formasyon başlatmak istiyorsa:
+            if is_just_crossed or (current_ema20 > current_ema50):
+                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_RETEST"
+            return False, 0, 0, 0, 0
+
+        # --- ADIM 2: RETEST (EMA 20/50 ARASI) BEKLEME ---
+        if current_state == "WAITING_FOR_RETEST":
+            # Eğer bu süreçte ters kesişim olursa (EMA 20 < EMA 50), tekrar başa dön
+            if current_ema20 < current_ema50:
+                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
+                return False, 0, 0, 0, 0
+
+            # Geriye dönük mumlarda retest arıyoruz (Fiyat 2 EMA arasına inmiş ama EMA 50 altına kapanış yapmamış)
+            found_valid_retest = False
+            retest_index = -3
+            while retest_index >= -25:
+                rc_close = df['close'].iloc[retest_index]
+                rc_ema20 = df['EMA20'].iloc[retest_index]
+                rc_ema50 = df['EMA50'].iloc[retest_index]
+
+                if rc_close < rc_ema50: # EMA 50 altı kapanış retesti bozar, başa sarar
+                    COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
+                    return False, 0, 0, 0, 0
+
+                if rc_close <= rc_ema20 and rc_close >= rc_ema50:
+                    found_valid_retest = True
+                    break
+                retest_index -= 1
+
+            if found_valid_retest:
+                # Retest bulundu! O mumun en yüksek noktasını (high) referans tepe olarak kaydediyoruz
+                ref_high = df['high'].iloc[retest_index]
+                COIN_REFERENCE_DATA[state_key] = ref_high
+                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_BREAKOUT"
+
+            return False, 0, 0, 0, 0
+
+        # --- ADIM 3: KIRILIM VE GİRİŞ SİNYALİ BEKLEME ---
+        if current_state == "WAITING_FOR_BREAKOUT":
+            # EMA'lar bozulmuş mu kontrol et
+            if current_ema20 < current_ema50:
+                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
+                return False, 0, 0, 0, 0
+
+            # Şart 1: Son mum yeşil olmalı
+            if curr_close <= curr_open:
+                return False, 0, 0, 0, 0
+
+            # Şart 2: Hacim ve RSI teyidi
+            prev_volumes = df['volume'].iloc[-2 - LOOKBACK_BARS : -2]
+            avg_volume = prev_volumes.mean()
+            if avg_volume == 0:
+                return False, 0, 0, 0, 0
+
+            vol_ratio = curr_vol / avg_volume
+            if vol_ratio < VOLUME_MULTIPLIER or curr_rsi < RSI_THRESHOLD:
+                return False, 0, 0, 0, 0
+
+            # Şart 3: Kaydedilen referans tepe seviyesi güncel mum kapanışı ile yukarı kırılmış mı?
+            ref_high = COIN_REFERENCE_DATA.get(state_key, 0)
+            if ref_high > 0 and curr_close > ref_high:
+                # BAŞARILI! Sinyal gönderiliyor ve coin sıfırlanma aşamasına geçiriliyor.
+                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_RESET"
+                return True, curr_close, curr_rsi, vol_ratio, avg_volume
+
+        return False, 0, 0, 0, 0
 
     except Exception:
-        return False, 0, 0, 0, 0, 0
+        return False, 0, 0, 0, 0
 
 # ==================== TARAMA YÜRÜTÜCÜ ====================
 def scan_market(pairs, interval):
@@ -239,14 +282,9 @@ def scan_market(pairs, interval):
 
         time.sleep(0.03)
 
-        is_match, price, rsi, vol_ratio, avg_vol, candle_time = check_volume_rsi_conditions(symbol, interval, market_type)
+        is_match, price, rsi, vol_ratio, avg_vol = check_volume_rsi_conditions(symbol, interval, market_type)
 
         if is_match:
-            signal_key = f"{symbol}_{market_type}"
-            if signal_key in LAST_SIGNAL_CANDLE_TIME and LAST_SIGNAL_CANDLE_TIME[signal_key] == candle_time:
-                continue
-
-            LAST_SIGNAL_CANDLE_TIME[signal_key] = candle_time
             match_count += 1
             interval_label = INTERVAL_LABELS.get(interval, interval)
             
@@ -258,13 +296,13 @@ def scan_market(pairs, interval):
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
 
             msg = (
-                f"🎯 *REFERANS TEPE KIRILIMI LONG GİRİŞİ*\n"
+                f"🎯 *ADIM ADIM STRATEJİ LONG GİRİŞİ*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Fiyat:* `${price}`\n"
                 f"📊 *Hacim Artışı:* `{vol_ratio:.1f}x`\n"
                 f"📈 *RSI ({RSI_PERIOD}):* `{rsi:.2f}`\n"
-                f"🕯️ *Mum Tipi:* `Geri Çekilme Tepe Noktası Kırılım Onayı`\n"
+                f"🕯️ *Mum Tipi:* `Kesişim -> Retest -> Tepe Kırılımı`\n"
                 f"{futures_info}\n"
                 f"💰 *24S Hacim:* `${volume_24h:,.2f}`\n"
                 f"🔗 [Binance {market_type.capitalize()} İşlem]({trade_link})"
@@ -277,7 +315,7 @@ def scan_market(pairs, interval):
 
 def run_scanner():
     now_str = get_tr_time()
-    print(f"[{now_str}] Referans Tepe Kırılımı Taraması Başlatıldı...", flush=True)
+    print(f"[{now_str}] Durum Kontrollü Tarama Başlatıldı...", flush=True)
 
     spot_pairs = get_spot_usdt_pairs()
     spot_matches = scan_market(spot_pairs, SCAN_INTERVAL)
@@ -292,9 +330,9 @@ if __name__ == "__main__":
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
     send_telegram_msg(
-        f"🟢 *Referans Tepe Kırılım Stratejisi Botu Aktif!*\n"
+        f"🟢 *Durum Kontrollü Strateji Botu Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
-        f"📊 *Şartlar:* `Ters Kesişim Yok + EMA 20 Geri Çekilme Tepesini Geçen Hacimli Kırılım ({VOLUME_MULTIPLIER}x)`"
+        f"📊 *Adımlar:* `1. Kesişim -> 2. Retest (EMA 20/50 Arası) -> 3. Tepe Kırılımı ({VOLUME_MULTIPLIER}x) -> 4. Sıfırlanma`"
     )
 
     while True:
