@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Esnek EMA Retest & Hacim Patlaması Tarayıcısı Aktif!"
+    return "Referans Tepe Kırılımı & Hacim Patlaması Tarayıcısı Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -35,7 +35,7 @@ LOOKBACK_BARS = 10         # Ortalama hacim için bakılacak mum sayısı
 VOLUME_MULTIPLIER = 3.0    # Hacim kat çarpanı
 RSI_THRESHOLD = 50.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
-MIN_24H_VOLUME_USDT = 50_000_000  # Minimum 24s Hacim (USDT)
+MIN_24H_VOLUME_USDT = 5_000_000  # Minimum 24s Hacim (USDT)
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
@@ -143,7 +143,7 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# ==================== ESNEK RETEST & KIRILIM STRATEJİSİ ====================
+# ==================== REFERANS TEPE KIRILIM STRATEJİSİ ====================
 def check_volume_rsi_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
@@ -179,11 +179,11 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         curr_vol = df['volume'].iloc[-2]
         curr_rsi = df['rsi'].iloc[-2]
 
-        # 1. Şart: Son mum güçlü bir Yeşil Mum Olmalı
+        # 1. Şart: Son tamamlanan mum güçlü bir Yeşil Mum Olmalı
         if curr_close <= curr_open:
             return False, 0, 0, 0, 0, last_candle_time
 
-        # 2. Şart: Hacim Patlaması ve RSI Kontrolü
+        # 2. Şart: Hacim Patlaması ve RSI Şartı
         prev_volumes = df['volume'].iloc[-2 - LOOKBACK_BARS : -2]
         avg_volume = prev_volumes.mean()
         if avg_volume == 0:
@@ -193,33 +193,34 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         if vol_ratio < VOLUME_MULTIPLIER or curr_rsi < RSI_THRESHOLD:
             return False, 0, 0, 0, 0, last_candle_time
 
-        # 3. EMA Trend Güvencesi: Son 10 mum boyunca EMA 20, EMA 50'nin altına hiç kesişim (death cross) yapmamış olmalı
+        # 3. Trend Güvencesi: Son 12 mum boyunca EMA 20, EMA 50'nin altına kesişim (death cross) yapmamış olmalı
         recent_ema20 = df['EMA20'].iloc[-12:-1]
         recent_ema50 = df['EMA50'].iloc[-12:-1]
         if any(recent_ema20 < recent_ema50):
             return False, 0, 0, 0, 0, last_candle_time
 
-        # 4. Esnek Retest / Kırılım Taraması (Geriye doğru tarayarak EMA 20 altı kapanış arıyoruz)
-        # Son mumdan önceki 15 mum içerisinde EMA 20'nin altında kapanış yapmış bir mum bulacağız
-        # ve o andan günümüze kadar EMA'lar hiç bozulmamış olacak.
-        found_under_ema = False
-        target_check_index = -3
+        # 4. Geri Çekilme (Kare İçindeki Mum) Tespiti:
+        # Geriye doğru bakarak EMA 20 altına sarkma (kapanış) yapmış olan o ilk mumu buluyoruz.
+        found_pullback = False
+        target_index = -3
         
-        while target_check_index >= -15:
-            c_close = df['close'].iloc[target_check_index]
-            c_ema20 = df['EMA20'].iloc[target_check_index]
+        while target_index >= -15:
+            c_close = df['close'].iloc[target_index]
+            c_ema20 = df['EMA20'].iloc[target_index]
             
             if c_close < c_ema20:
-                found_under_ema = True
+                found_pullback = True
                 break
-            target_check_index -= 1
+            target_index -= 1
 
-        if not found_under_ema:
+        if not found_pullback:
             return False, 0, 0, 0, 0, last_candle_time
 
-        # 5. Kırılım Onayı: Son yeşil mum, o EMA altı kapanış yapan mumu veya düşüş trendindeki tepeyi yukarı kırmış olmalı
-        reference_high = df['high'].iloc[target_check_index]
-        if curr_close > reference_high:
+        # 5. Kırılım Onayı: Bulduğumuz o geri çekilme mumuunun EN YÜKSEK SEVİYESİ (`high`), 
+        # güncel yeşil mumun kapanışı (`curr_close`) tarafından yukarı yönlü kırılmış/geçilmiş olmalı.
+        reference_high_level = df['high'].iloc[target_index]
+        
+        if curr_close > reference_high_level:
             return True, curr_close, curr_rsi, vol_ratio, avg_volume, last_candle_time
 
         return False, 0, 0, 0, 0, last_candle_time
@@ -257,13 +258,13 @@ def scan_market(pairs, interval):
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
 
             msg = (
-                f"🎯 *ESNEK RETEST & KIRILIM LONG GİRİŞİ*\n"
+                f"🎯 *REFERANS TEPE KIRILIMI LONG GİRİŞİ*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Fiyat:* `${price}`\n"
                 f"📊 *Hacim Artışı:* `{vol_ratio:.1f}x`\n"
                 f"📈 *RSI ({RSI_PERIOD}):* `{rsi:.2f}`\n"
-                f"🕯️ *Mum Tipi:* `Retest Sonrası Yukarı Kırılım Onayı`\n"
+                f"🕯️ *Mum Tipi:* `Geri Çekilme Tepe Noktası Kırılım Onayı`\n"
                 f"{futures_info}\n"
                 f"💰 *24S Hacim:* `${volume_24h:,.2f}`\n"
                 f"🔗 [Binance {market_type.capitalize()} İşlem]({trade_link})"
@@ -276,7 +277,7 @@ def scan_market(pairs, interval):
 
 def run_scanner():
     now_str = get_tr_time()
-    print(f"[{now_str}] Esnek Retest Taraması Başlatıldı...", flush=True)
+    print(f"[{now_str}] Referans Tepe Kırılımı Taraması Başlatıldı...", flush=True)
 
     spot_pairs = get_spot_usdt_pairs()
     spot_matches = scan_market(spot_pairs, SCAN_INTERVAL)
@@ -291,9 +292,9 @@ if __name__ == "__main__":
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
     send_telegram_msg(
-        f"🟢 *Esnek Retest Strateji Botu Aktif!*\n"
+        f"🟢 *Referans Tepe Kırılım Stratejisi Botu Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
-        f"📊 *Şartlar:* `Ters Kesisim Yok + EMA 20 Altı Kapanış Retesti + Sonradan Gelen Hacimli Kırılım Mumu ({VOLUME_MULTIPLIER}x)`"
+        f"📊 *Şartlar:* `Ters Kesişim Yok + EMA 20 Geri Çekilme Tepesini Geçen Hacimli Kırılım ({VOLUME_MULTIPLIER}x)`"
     )
 
     while True:
