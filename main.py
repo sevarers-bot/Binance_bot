@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Retest & Alıcılı Onay Giriş Stratejisi Aktif!"
+    return "Esnek EMA Retest & Hacim Patlaması Tarayıcısı Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -32,10 +32,10 @@ CHAT_ID = "-1004481336360"
 
 SCAN_INTERVAL = "5m"        # Zaman Dilimi
 LOOKBACK_BARS = 10         # Ortalama hacim için bakılacak mum sayısı
-VOLUME_MULTIPLIER = 2.0    # Hacim kat çarpanı
-RSI_THRESHOLD = 40.0      # Minimum RSI eşiği
+VOLUME_MULTIPLIER = 3.0    # Hacim kat çarpanı
+RSI_THRESHOLD = 50.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
-MIN_24H_VOLUME_USDT = 10_000_000  # Minimum 24s Hacim (USDT)
+MIN_24H_VOLUME_USDT = 50_000_000  # Minimum 24s Hacim (USDT)
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
@@ -143,18 +143,18 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# ==================== RETEST & ALICILI MUM GİRİŞ MANTIĞI ====================
+# ==================== ESNEK RETEST & KIRILIM STRATEJİSİ ====================
 def check_volume_rsi_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
 
     try:
         url = f"{base_url}{endpoint}"
-        fetch_limit = LOOKBACK_BARS + RSI_PERIOD + 40
+        fetch_limit = 50  # Geçmişi taramak için yeterli mum derinliği
         params = {"symbol": symbol, "interval": interval, "limit": fetch_limit}
         res = requests.get(url, params=params, timeout=4).json()
 
-        if not isinstance(res, list) or len(res) < fetch_limit - 5:
+        if not isinstance(res, list) or len(res) < 30:
             return False, 0, 0, 0, 0, 0
 
         df = pd.DataFrame(res, columns=[
@@ -164,8 +164,8 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
 
         df['open'] = df['open'].astype(float)
         df['close'] = df['close'].astype(float)
-        df['low'] = df['low'].astype(float)
         df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
         df['volume'] = df['volume'].astype(float)
 
         # İndikatörler
@@ -173,43 +173,53 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
 
-        # Son tamamlanan mum (-2) ve bir önceki mum (-3)
         last_candle_time = df['time'].iloc[-2]
-        
         curr_open = df['open'].iloc[-2]
         curr_close = df['close'].iloc[-2]
-        curr_low = df['low'].iloc[-2]
         curr_vol = df['volume'].iloc[-2]
         curr_rsi = df['rsi'].iloc[-2]
-        
-        prev_close = df['close'].iloc[-3]
-        prev_low = df['low'].iloc[-3]
-        
-        ema20_curr = df['EMA20'].iloc[-2]
-        ema50_curr = df['EMA50'].iloc[-2]
 
-        # 1. Şart: Mevcut mum güçlü bir Yeşil Mum Olmalı (Kapanış > Açılış)
-        is_green = curr_close > curr_open
-        if not is_green:
+        # 1. Şart: Son mum güçlü bir Yeşil Mum Olmalı
+        if curr_close <= curr_open:
             return False, 0, 0, 0, 0, last_candle_time
 
-        # 2. Şart: Hacim Patlaması (Ortalamanın X Katı)
+        # 2. Şart: Hacim Patlaması ve RSI Kontrolü
         prev_volumes = df['volume'].iloc[-2 - LOOKBACK_BARS : -2]
         avg_volume = prev_volumes.mean()
         if avg_volume == 0:
             return False, 0, 0, 0, 0, last_candle_time
 
         vol_ratio = curr_vol / avg_volume
-        is_volume_spike = vol_ratio >= VOLUME_MULTIPLIER
-        is_rsi_valid = curr_rsi >= RSI_THRESHOLD
+        if vol_ratio < VOLUME_MULTIPLIER or curr_rsi < RSI_THRESHOLD:
+            return False, 0, 0, 0, 0, last_candle_time
 
-        # 3. Retest & EMA Temas / Altı Sarkma ve Toparlanma Mantığı:
-        # Fiyat EMA 20 veya EMA 50 bölgesine temas etmiş ya da hemen altından güçlü bir şekilde yukarı yutarak (engulfing) çıkmış olmalı.
-        # Yani önceki mum EMA altını yoklamış veya iki EMA arasındayken, şimdiki yeşil mum önceki mumun tepesini ve EMA bandını yukarı kırmış olmalı.
-        is_near_emas = (curr_low <= max(ema20_curr, ema50_curr)) and (curr_close > min(ema20_curr, ema50_curr))
-        is_engulfing = curr_close > prev_close  # Önceki mumun kapanışından yukarıda kapatarak alıcılı olduğunu gösterir
+        # 3. EMA Trend Güvencesi: Son 10 mum boyunca EMA 20, EMA 50'nin altına hiç kesişim (death cross) yapmamış olmalı
+        recent_ema20 = df['EMA20'].iloc[-12:-1]
+        recent_ema50 = df['EMA50'].iloc[-12:-1]
+        if any(recent_ema20 < recent_ema50):
+            return False, 0, 0, 0, 0, last_candle_time
 
-        if is_volume_spike and is_rsi_valid and (is_near_emas or is_engulfing):
+        # 4. Esnek Retest / Kırılım Taraması (Geriye doğru tarayarak EMA 20 altı kapanış arıyoruz)
+        # Son mumdan önceki 15 mum içerisinde EMA 20'nin altında kapanış yapmış bir mum bulacağız
+        # ve o andan günümüze kadar EMA'lar hiç bozulmamış olacak.
+        found_under_ema = False
+        target_check_index = -3
+        
+        while target_check_index >= -15:
+            c_close = df['close'].iloc[target_check_index]
+            c_ema20 = df['EMA20'].iloc[target_check_index]
+            
+            if c_close < c_ema20:
+                found_under_ema = True
+                break
+            target_check_index -= 1
+
+        if not found_under_ema:
+            return False, 0, 0, 0, 0, last_candle_time
+
+        # 5. Kırılım Onayı: Son yeşil mum, o EMA altı kapanış yapan mumu veya düşüş trendindeki tepeyi yukarı kırmış olmalı
+        reference_high = df['high'].iloc[target_check_index]
+        if curr_close > reference_high:
             return True, curr_close, curr_rsi, vol_ratio, avg_volume, last_candle_time
 
         return False, 0, 0, 0, 0, last_candle_time
@@ -247,13 +257,13 @@ def scan_market(pairs, interval):
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
 
             msg = (
-                f"🎯 *RETEST & EMA ONAYLI LONG GİRİŞ SİNYALİ*\n"
+                f"🎯 *ESNEK RETEST & KIRILIM LONG GİRİŞİ*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Fiyat:* `${price}`\n"
                 f"📊 *Hacim Artışı:* `{vol_ratio:.1f}x`\n"
                 f"📈 *RSI ({RSI_PERIOD}):* `{rsi:.2f}`\n"
-                f"🕯️ *Mum Tipi:* `Retest Sonrası Alıcılı Onay Mumu`\n"
+                f"🕯️ *Mum Tipi:* `Retest Sonrası Yukarı Kırılım Onayı`\n"
                 f"{futures_info}\n"
                 f"💰 *24S Hacim:* `${volume_24h:,.2f}`\n"
                 f"🔗 [Binance {market_type.capitalize()} İşlem]({trade_link})"
@@ -266,7 +276,7 @@ def scan_market(pairs, interval):
 
 def run_scanner():
     now_str = get_tr_time()
-    print(f"[{now_str}] Retest ve EMA Onaylı Tarama Başlatıldı...", flush=True)
+    print(f"[{now_str}] Esnek Retest Taraması Başlatıldı...", flush=True)
 
     spot_pairs = get_spot_usdt_pairs()
     spot_matches = scan_market(spot_pairs, SCAN_INTERVAL)
@@ -281,9 +291,9 @@ if __name__ == "__main__":
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
     send_telegram_msg(
-        f"🟢 *Retest Giriş Stratejisi Botu Aktif!*\n"
+        f"🟢 *Esnek Retest Strateji Botu Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
-        f"📊 *Şartlar:* `EMA Bölgesi Retesti / Altı Sarkma + Hacim Patlaması ({VOLUME_MULTIPLIER}x) + RSI (>= {RSI_THRESHOLD})`"
+        f"📊 *Şartlar:* `Ters Kesisim Yok + EMA 20 Altı Kapanış Retesti + Sonradan Gelen Hacimli Kırılım Mumu ({VOLUME_MULTIPLIER}x)`"
     )
 
     while True:
@@ -292,4 +302,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
 
-        time.sleep(15)  # Hızlı yakalamak için 15 saniye
+        time.sleep(15)
