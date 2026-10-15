@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Adım Adım Durum Kontrollü EMA Strateji Botu Aktif!"
+    return "Saf Retest & Sıfırlanma (Reset) Kontrollü Bot Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -27,12 +27,10 @@ def keep_alive():
     t.start()
 
 # ==================== MANUEL AYARLANABİLİR PARAMETRELER ====================
-TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
-CHAT_ID = "-1004481336360"
+TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs
+CHAT_ID =" "-1004481336360"
 
 SCAN_INTERVAL = "5m"        # Zaman Dilimi
-LOOKBACK_BARS = 10         # Ortalama hacim için bakılacak mum sayısı
-VOLUME_MULTIPLIER = 3.0    # Hacim kat çarpanı
 RSI_THRESHOLD = 50.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
 MIN_24H_VOLUME_USDT = 5_000_000  # Minimum 24s Hacim (USDT)
@@ -40,10 +38,8 @@ MIN_24H_VOLUME_USDT = 5_000_000  # Minimum 24s Hacim (USDT)
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# Her coin için aşama ve referans verilerini tutacağımız hafıza yapısı
-# States: "WAITING_FOR_CROSS", "WAITING_FOR_RETEST", "WAITING_FOR_BREAKOUT", "WAITING_FOR_RESET"
+# Her coin için aşama takibi: "WAITING_FOR_CROSS", "WAITING_FOR_RETEST", "WAITING_FOR_RESET"
 COIN_STATE_TRACKER = {}
-COIN_REFERENCE_DATA = {} # Retest mumunun high değerini saklamak için
 
 STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "EURUSDT", "GBPUSDT", "DAIUSDT", "AEURUSDT"]
 
@@ -147,8 +143,8 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# ==================== ADIM ADIM DURUM KONTROLLÜ STRATEJİ ====================
-def check_volume_rsi_conditions(symbol, interval, market_type):
+# ==================== ADIM ADIM STATE MANTIKLI STRATEJİ ====================
+def check_retest_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
     state_key = f"{symbol}_{market_type}"
@@ -160,7 +156,7 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         res = requests.get(url, params=params, timeout=4).json()
 
         if not isinstance(res, list) or len(res) < 50:
-            return False, 0, 0, 0, 0
+            return False, 0, 0
 
         df = pd.DataFrame(res, columns=[
             'time', 'open', 'high', 'low', 'close', 'volume',
@@ -169,9 +165,8 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
 
         df['open'] = df['open'].astype(float)
         df['close'] = df['close'].astype(float)
-        df['high'] = df['high'].astype(float)
         df['low'] = df['low'].astype(float)
-        df['volume'] = df['volume'].astype(float)
+        df['high'] = df['high'].astype(float)
 
         df['rsi'] = calculate_rsi(df['close'], period=RSI_PERIOD)
         df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
@@ -179,7 +174,6 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
 
         curr_open = df['open'].iloc[-2]
         curr_close = df['close'].iloc[-2]
-        curr_vol = df['volume'].iloc[-2]
         curr_rsi = df['rsi'].iloc[-2]
         
         current_ema20 = df['EMA20'].iloc[-2]
@@ -187,89 +181,62 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
         prev_ema20 = df['EMA20'].iloc[-3]
         prev_ema50 = df['EMA50'].iloc[-3]
 
-        # Coinin mevcut durumu yoksa ilk aşamadan başlatıyoruz
+        # Coinin mevcut aşamasını öğreniyoruz (Varsayılan: İlk Kesişimi Bekle)
         current_state = COIN_STATE_TRACKER.get(state_key, "WAITING_FOR_CROSS")
 
-        # --- ADIM 4: SİNYAL SONRASI SIFIRLANMA (RESET) KONTROLÜ ---
+        # --- AŞAMA 4: SİNYAL SONRASI SIFIRLANMA (RESET) KONTROLÜ ---
         if current_state == "WAITING_FOR_RESET":
-            # EMA 20, EMA 50'nin altına inerse (Death Cross / Soğuma) her şey en başa döner
+            # EMA 20, EMA 50'nin altına indiğinde (Death Cross / Soğuma) her şey en başa (Aşama 1'e) döner
             if current_ema20 < current_ema50:
                 COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
-            return False, 0, 0, 0, 0
+            return False, 0, 0
 
-        # --- ADIM 1: İLK KESİŞİM (GOLDEN CROSS) BEKLEME ---
+        # --- AŞAMA 1: İLK KESİŞİM (GOLDEN CROSS) BEKLEME ---
         if current_state == "WAITING_FOR_CROSS":
-            # Önceki mumda EMA20 <= EMA50 iken, şimdi EMA20 > EMA50 olduysa kesişim gerçekleşmiştir
             is_just_crossed = (prev_ema20 <= prev_ema50) and (current_ema20 > current_ema50)
-            # Veya halihazırda yukarıda ve yeni bir formasyon başlatmak istiyorsa:
             if is_just_crossed or (current_ema20 > current_ema50):
                 COIN_STATE_TRACKER[state_key] = "WAITING_FOR_RETEST"
-            return False, 0, 0, 0, 0
+            return False, 0, 0
 
-        # --- ADIM 2: RETEST (EMA 20/50 ARASI) BEKLEME ---
+        # --- AŞAMA 2 & 3: RETEST VE DÖNÜŞ MUMU (GİRİŞ SİNYALİ) ---
         if current_state == "WAITING_FOR_RETEST":
-            # Eğer bu süreçte ters kesişim olursa (EMA 20 < EMA 50), tekrar başa dön
+            # Süreçte ters kesişim olursa başa sar
             if current_ema20 < current_ema50:
                 COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
-                return False, 0, 0, 0, 0
+                return False, 0, 0
 
-            # Geriye dönük mumlarda retest arıyoruz (Fiyat 2 EMA arasına inmiş ama EMA 50 altına kapanış yapmamış)
-            found_valid_retest = False
-            retest_index = -3
-            while retest_index >= -25:
-                rc_close = df['close'].iloc[retest_index]
-                rc_ema20 = df['EMA20'].iloc[retest_index]
-                rc_ema50 = df['EMA50'].iloc[retest_index]
-
-                if rc_close < rc_ema50: # EMA 50 altı kapanış retesti bozar, başa sarar
-                    COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
-                    return False, 0, 0, 0, 0
-
-                if rc_close <= rc_ema20 and rc_close >= rc_ema50:
-                    found_valid_retest = True
-                    break
-                retest_index -= 1
-
-            if found_valid_retest:
-                # Retest bulundu! O mumun en yüksek noktasını (high) referans tepe olarak kaydediyoruz
-                ref_high = df['high'].iloc[retest_index]
-                COIN_REFERENCE_DATA[state_key] = ref_high
-                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_BREAKOUT"
-
-            return False, 0, 0, 0, 0
-
-        # --- ADIM 3: KIRILIM VE GİRİŞ SİNYALİ BEKLEME ---
-        if current_state == "WAITING_FOR_BREAKOUT":
-            # EMA'lar bozulmuş mu kontrol et
-            if current_ema20 < current_ema50:
-                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
-                return False, 0, 0, 0, 0
-
-            # Şart 1: Son mum yeşil olmalı
+            # Şart 1: Son tamamlanan mum yeşil olmalı
             if curr_close <= curr_open:
-                return False, 0, 0, 0, 0
+                return False, 0, 0
 
-            # Şart 2: Hacim ve RSI teyidi
-            prev_volumes = df['volume'].iloc[-2 - LOOKBACK_BARS : -2]
-            avg_volume = prev_volumes.mean()
-            if avg_volume == 0:
-                return False, 0, 0, 0, 0
+            # Şart 2: RSI Kontrolü
+            if curr_rsi < RSI_THRESHOLD:
+                return False, 0, 0
 
-            vol_ratio = curr_vol / avg_volume
-            if vol_ratio < VOLUME_MULTIPLIER or curr_rsi < RSI_THRESHOLD:
-                return False, 0, 0, 0, 0
+            # Şart 3: Net Retest (Fiyat EMA 20 ile EMA 50 arasında veya temas halinde, EMA 50 altı kapanış yok)
+            valid_retest_structure = True
+            for i in range(-5, -1):
+                c_close = df['close'].iloc[i]
+                c_ema50 = df['EMA50'].iloc[i]
+                if c_close < c_ema50:
+                    valid_retest_structure = False
+                    break
 
-            # Şart 3: Kaydedilen referans tepe seviyesi güncel mum kapanışı ile yukarı kırılmış mı?
-            ref_high = COIN_REFERENCE_DATA.get(state_key, 0)
-            if ref_high > 0 and curr_close > ref_high:
-                # BAŞARILI! Sinyal gönderiliyor ve coin sıfırlanma aşamasına geçiriliyor.
+            if not valid_retest_structure:
+                COIN_STATE_TRACKER[state_key] = "WAITING_FOR_CROSS"
+                return False, 0, 0
+
+            is_retest_zone = (curr_close >= current_ema50) and (curr_close <= current_ema20 * 1.01)
+
+            if is_retest_zone:
+                # BAŞARILI! Sinyal veriliyor ve coin sıfırlanma (reset) aşamasına kilitleniyor.
                 COIN_STATE_TRACKER[state_key] = "WAITING_FOR_RESET"
-                return True, curr_close, curr_rsi, vol_ratio, avg_volume
+                return True, curr_close, curr_rsi
 
-        return False, 0, 0, 0, 0
+        return False, 0, 0
 
     except Exception:
-        return False, 0, 0, 0, 0
+        return False, 0, 0
 
 # ==================== TARAMA YÜRÜTÜCÜ ====================
 def scan_market(pairs, interval):
@@ -282,7 +249,7 @@ def scan_market(pairs, interval):
 
         time.sleep(0.03)
 
-        is_match, price, rsi, vol_ratio, avg_vol = check_volume_rsi_conditions(symbol, interval, market_type)
+        is_match, price, rsi = check_retest_conditions(symbol, interval, market_type)
 
         if is_match:
             match_count += 1
@@ -296,26 +263,25 @@ def scan_market(pairs, interval):
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
 
             msg = (
-                f"🎯 *ADIM ADIM STRATEJİ LONG GİRİŞİ*\n"
+                f"🎯 *KONTROLLÜ RETEST LONG GİRİŞİ*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Fiyat:* `${price}`\n"
-                f"📊 *Hacim Artışı:* `{vol_ratio:.1f}x`\n"
                 f"📈 *RSI ({RSI_PERIOD}):* `{rsi:.2f}`\n"
-                f"🕯️ *Mum Tipi:* `Kesişim -> Retest -> Tepe Kırılımı`\n"
+                f"🕯️ *Mum Tipi:* `Kesişim Sonrası EMA Arası Retest Dönüşü`\n"
                 f"{futures_info}\n"
                 f"💰 *24S Hacim:* `${volume_24h:,.2f}`\n"
                 f"🔗 [Binance {market_type.capitalize()} İşlem]({trade_link})"
             )
 
             send_telegram_msg(msg)
-            print(f"-> GİRİŞ SİNYALİ: {symbol} [{market_type}] - Hacim: {vol_ratio:.1f}x", flush=True)
+            print(f"-> GİRİŞ SİNYALİ: {symbol} [{market_type}] - Fiyat: {price}", flush=True)
 
     return match_count
 
 def run_scanner():
     now_str = get_tr_time()
-    print(f"[{now_str}] Durum Kontrollü Tarama Başlatıldı...", flush=True)
+    print(f"[{now_str}] Kontrollü Retest Taraması Başlatıldı...", flush=True)
 
     spot_pairs = get_spot_usdt_pairs()
     spot_matches = scan_market(spot_pairs, SCAN_INTERVAL)
@@ -330,9 +296,9 @@ if __name__ == "__main__":
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
     send_telegram_msg(
-        f"🟢 *Durum Kontrollü Strateji Botu Aktif!*\n"
+        f"🟢 *Sıfırlanma Kontrollü Retest Botu Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
-        f"📊 *Adımlar:* `1. Kesişim -> 2. Retest (EMA 20/50 Arası) -> 3. Tepe Kırılımı ({VOLUME_MULTIPLIER}x) -> 4. Sıfırlanma`"
+        f"📊 *Adımlar:* `1. Kesişim -> 2. Retest (EMA 20/50 Arası) -> 3. Sinyal -> 4. Death Cross ile Başa Dönüş`"
     )
 
     while True:
