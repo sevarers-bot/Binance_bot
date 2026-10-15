@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Hacim Patlaması & RSI Tarayıcı Aktif!"
+    return "Retest & Alıcılı Onay Giriş Stratejisi Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -31,19 +31,16 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
 CHAT_ID = "-1004481336360"
 
 SCAN_INTERVAL = "5m"        # Zaman Dilimi
-LOOKBACK_BARS = 20         # Ortalama hacim için bakılacak mum sayısı
-VOLUME_MULTIPLIER = 4.0    # Hacim kat çarpanı
-RSI_THRESHOLD = 50.0      # Minimum RSI eşiği
+LOOKBACK_BARS = 10         # Ortalama hacim için bakılacak mum sayısı
+VOLUME_MULTIPLIER = 2.0    # Hacim kat çarpanı
+RSI_THRESHOLD = 40.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
-MIN_24H_VOLUME_USDT = 100_000_000  # Minimum 24s Hacim (USDT)
+MIN_24H_VOLUME_USDT = 10_000_000  # Minimum 24s Hacim (USDT)
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# Aynı mumda tekrar sinyal atılmasını önlemek için hafıza
 LAST_SIGNAL_CANDLE_TIME = {}
-
-# Sabit coinler ve pariteler (Hacim patlaması aramamak için)
 STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "EURUSDT", "GBPUSDT", "DAIUSDT", "AEURUSDT"]
 
 INTERVAL_LABELS = {
@@ -71,7 +68,7 @@ def send_telegram_msg(message):
     except Exception as e:
         print(f"Telegram Hatası: {e}", flush=True)
 
-# ==================== LONG/SHORT & FUNDING RATE BİLGİSİ ÇEKME ====================
+# ==================== LONG/SHORT & FUNDING RATE BİLGİSİ ====================
 def get_futures_metrics(symbol):
     funding_rate_str = "N/A"
     long_short_str = "N/A"
@@ -98,7 +95,7 @@ def get_futures_metrics(symbol):
 
     return long_short_str, funding_rate_str
 
-# ==================== SEMBOL LİSTELERİ (FİLTRELİ) ====================
+# ==================== SEMBOL LİSTELERİ ====================
 def get_spot_usdt_pairs():
     try:
         url = f"{BINANCE_SPOT_URL}/api/v3/ticker/24hr"
@@ -114,15 +111,9 @@ def get_spot_usdt_pairs():
 
             if symbol.endswith("USDT") and symbol not in STABLE_COINS and not any(x in symbol for x in ["UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT"]):
                 if vol_24h >= MIN_24H_VOLUME_USDT:
-                    valid_pairs.append({
-                        "symbol": symbol,
-                        "price": price,
-                        "volume_24h": vol_24h,
-                        "market_type": "SPOT"
-                    })
+                    valid_pairs.append({"symbol": symbol, "price": price, "volume_24h": vol_24h, "market_type": "SPOT"})
         return valid_pairs
-    except Exception as e:
-        print(f"Spot Sembol Çekme Hatası: {e}", flush=True)
+    except Exception:
         return []
 
 def get_futures_usdt_pairs():
@@ -139,15 +130,9 @@ def get_futures_usdt_pairs():
             price = float(coin.get('lastPrice', 0))
 
             if symbol.endswith("USDT") and symbol not in STABLE_COINS and vol_24h >= MIN_24H_VOLUME_USDT:
-                valid_pairs.append({
-                    "symbol": symbol,
-                    "price": price,
-                    "volume_24h": vol_24h,
-                    "market_type": "FUTURES"
-                })
+                valid_pairs.append({"symbol": symbol, "price": price, "volume_24h": vol_24h, "market_type": "FUTURES"})
         return valid_pairs
-    except Exception as e:
-        print(f"Futures Sembol Çekme Hatası: {e}", flush=True)
+    except Exception:
         return []
 
 # ==================== İNDİKATÖR HESAPLAMALARI ====================
@@ -158,14 +143,14 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# ==================== TEKNİK ANALİZ KONTROLÜ ====================
+# ==================== RETEST & ALICILI MUM GİRİŞ MANTIĞI ====================
 def check_volume_rsi_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
 
     try:
         url = f"{base_url}{endpoint}"
-        fetch_limit = LOOKBACK_BARS + RSI_PERIOD + 20
+        fetch_limit = LOOKBACK_BARS + RSI_PERIOD + 40
         params = {"symbol": symbol, "interval": interval, "limit": fetch_limit}
         res = requests.get(url, params=params, timeout=4).json()
 
@@ -179,32 +164,53 @@ def check_volume_rsi_conditions(symbol, interval, market_type):
 
         df['open'] = df['open'].astype(float)
         df['close'] = df['close'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['high'] = df['high'].astype(float)
         df['volume'] = df['volume'].astype(float)
 
+        # İndikatörler
         df['rsi'] = calculate_rsi(df['close'], period=RSI_PERIOD)
+        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
 
+        # Son tamamlanan mum (-2) ve bir önceki mum (-3)
         last_candle_time = df['time'].iloc[-2]
-        last_open = df['open'].iloc[-2]
-        last_close = df['close'].iloc[-2]
-        last_vol = df['volume'].iloc[-2]
-        last_rsi = df['rsi'].iloc[-2]
+        
+        curr_open = df['open'].iloc[-2]
+        curr_close = df['close'].iloc[-2]
+        curr_low = df['low'].iloc[-2]
+        curr_vol = df['volume'].iloc[-2]
+        curr_rsi = df['rsi'].iloc[-2]
+        
+        prev_close = df['close'].iloc[-3]
+        prev_low = df['low'].iloc[-3]
+        
+        ema20_curr = df['EMA20'].iloc[-2]
+        ema50_curr = df['EMA50'].iloc[-2]
 
-        is_green = last_close > last_open
+        # 1. Şart: Mevcut mum güçlü bir Yeşil Mum Olmalı (Kapanış > Açılış)
+        is_green = curr_close > curr_open
         if not is_green:
             return False, 0, 0, 0, 0, last_candle_time
 
+        # 2. Şart: Hacim Patlaması (Ortalamanın X Katı)
         prev_volumes = df['volume'].iloc[-2 - LOOKBACK_BARS : -2]
         avg_volume = prev_volumes.mean()
-
         if avg_volume == 0:
             return False, 0, 0, 0, 0, last_candle_time
 
-        vol_ratio = last_vol / avg_volume
+        vol_ratio = curr_vol / avg_volume
         is_volume_spike = vol_ratio >= VOLUME_MULTIPLIER
-        is_rsi_valid = last_rsi >= RSI_THRESHOLD
+        is_rsi_valid = curr_rsi >= RSI_THRESHOLD
 
-        if is_volume_spike and is_rsi_valid:
-            return True, last_close, last_rsi, vol_ratio, avg_volume, last_candle_time
+        # 3. Retest & EMA Temas / Altı Sarkma ve Toparlanma Mantığı:
+        # Fiyat EMA 20 veya EMA 50 bölgesine temas etmiş ya da hemen altından güçlü bir şekilde yukarı yutarak (engulfing) çıkmış olmalı.
+        # Yani önceki mum EMA altını yoklamış veya iki EMA arasındayken, şimdiki yeşil mum önceki mumun tepesini ve EMA bandını yukarı kırmış olmalı.
+        is_near_emas = (curr_low <= max(ema20_curr, ema50_curr)) and (curr_close > min(ema20_curr, ema50_curr))
+        is_engulfing = curr_close > prev_close  # Önceki mumun kapanışından yukarıda kapatarak alıcılı olduğunu gösterir
+
+        if is_volume_spike and is_rsi_valid and (is_near_emas or is_engulfing):
+            return True, curr_close, curr_rsi, vol_ratio, avg_volume, last_candle_time
 
         return False, 0, 0, 0, 0, last_candle_time
 
@@ -225,48 +231,42 @@ def scan_market(pairs, interval):
         is_match, price, rsi, vol_ratio, avg_vol, candle_time = check_volume_rsi_conditions(symbol, interval, market_type)
 
         if is_match:
-            # Piyasaya özel anahtar (Örn: BTCUSDT_SPOT ve BTCUSDT_FUTURES ayrı ayrı takip edilir)
             signal_key = f"{symbol}_{market_type}"
-            
-            if signal_key in LAST_SIGNAL_CANDLE_TIME:
-                if LAST_SIGNAL_CANDLE_TIME[signal_key] == candle_time:
-                    continue
+            if signal_key in LAST_SIGNAL_CANDLE_TIME and LAST_SIGNAL_CANDLE_TIME[signal_key] == candle_time:
+                continue
 
             LAST_SIGNAL_CANDLE_TIME[signal_key] = candle_time
             match_count += 1
             interval_label = INTERVAL_LABELS.get(interval, interval)
             
-            # Sadece Futures coinleri için L/S oranı ve FR çekilir
+            futures_info = ""
             if market_type == "FUTURES":
                 ls_ratio, funding_rate = get_futures_metrics(symbol)
                 futures_info = f"⚖️ *Long / Short Oranı:* `{ls_ratio}`\n💸 *Funding Rate (FR):* `{funding_rate}`\n"
-            else:
-                futures_info = ""
 
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
 
             msg = (
-                f"🚨 *HACİM PATLAMASI & RSI SİNYALİ*\n"
+                f"🎯 *RETEST & EMA ONAYLI LONG GİRİŞ SİNYALİ*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Fiyat:* `${price}`\n"
-                f"📊 *Hacim Artışı:* `{vol_ratio:.1f}x` *(Son {LOOKBACK_BARS} mum ortalamasının)*\n"
+                f"📊 *Hacim Artışı:* `{vol_ratio:.1f}x`\n"
                 f"📈 *RSI ({RSI_PERIOD}):* `{rsi:.2f}`\n"
-                f"🕯️ *Mum Tipi:* `Yeşil (Yükseliş)`\n"
+                f"🕯️ *Mum Tipi:* `Retest Sonrası Alıcılı Onay Mumu`\n"
                 f"{futures_info}\n"
                 f"💰 *24S Hacim:* `${volume_24h:,.2f}`\n"
                 f"🔗 [Binance {market_type.capitalize()} İşlem]({trade_link})"
             )
 
             send_telegram_msg(msg)
-            print(f"-> SİNYAL: {symbol} [{market_type}] - Hacim: {vol_ratio:.1f}x - RSI: {rsi:.1f}", flush=True)
+            print(f"-> GİRİŞ SİNYALİ: {symbol} [{market_type}] - Hacim: {vol_ratio:.1f}x", flush=True)
 
     return match_count
 
 def run_scanner():
     now_str = get_tr_time()
-    interval_label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
-    print(f"[{now_str}] Tarama Başlatıldı | Zaman Dilimi: {interval_label}...", flush=True)
+    print(f"[{now_str}] Retest ve EMA Onaylı Tarama Başlatıldı...", flush=True)
 
     spot_pairs = get_spot_usdt_pairs()
     spot_matches = scan_market(spot_pairs, SCAN_INTERVAL)
@@ -274,19 +274,16 @@ def run_scanner():
     futures_pairs = get_futures_usdt_pairs()
     futures_matches = scan_market(futures_pairs, SCAN_INTERVAL)
 
-    total_matches = spot_matches + futures_matches
-    print(f"[{now_str}] Tarama Bitti. Toplam Bulunan: {total_matches}", flush=True)
+    print(f"[{now_str}] Tarama Bitti. Toplam Bulunan: {spot_matches + futures_matches}", flush=True)
 
 if __name__ == "__main__":
     keep_alive()
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
     send_telegram_msg(
-        f"🟢 *Hacim Patlaması & RSI Tarayıcı Aktif!*\n"
+        f"🟢 *Retest Giriş Stratejisi Botu Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
-        f"📊 *Hacim Şartı:* `Son {LOOKBACK_BARS} mum ortalamasının {VOLUME_MULTIPLIER}x katı (Yeşil Mum)`\n"
-        f"📈 *RSI Şartı:* `>= {RSI_THRESHOLD}`\n"
-        f"🔒 *Çift Sinyal Koruması:* `Aktif (Spot/Futures ayrıştırıldı)`"
+        f"📊 *Şartlar:* `EMA Bölgesi Retesti / Altı Sarkma + Hacim Patlaması ({VOLUME_MULTIPLIER}x) + RSI (>= {RSI_THRESHOLD})`"
     )
 
     while True:
@@ -295,4 +292,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Döngü Hatası: {e}", flush=True)
 
-        time.sleep(10)
+        time.sleep(15)  # Hızlı yakalamak için 15 saniye
