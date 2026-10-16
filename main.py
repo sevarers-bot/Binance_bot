@@ -31,9 +31,9 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
 CHAT_ID = "-1004481336360"
 
 SCAN_INTERVAL = "5m"        # Zaman Dilimi
-RSI_THRESHOLD = 50.0      # Minimum RSI eşiği
+RSI_THRESHOLD = 40.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
-MIN_24H_VOLUME_USDT = 50_000_000  # Minimum 24s Hacim (USDT)
+MIN_24H_VOLUME_USDT = 5_000_000  # Minimum 24s Hacim (USDT)
 
 BINANCE_SPOT_URL = "https://api.binance.com"
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
