@@ -31,7 +31,7 @@ TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
 CHAT_ID = "-1004481336360"
 
 SCAN_INTERVAL = "15m"        # Zaman Dilimi
-RSI_THRESHOLD = 40.0      # Minimum RSI eşiği
+RSI_THRESHOLD = 30.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
 MIN_24H_VOLUME_USDT = 5_000_000  # Minimum 24s Hacim (USDT)
 
