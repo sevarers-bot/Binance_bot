@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Sıralı Retest & Kırılım Botu Aktif!"
+    return "EMA 50 Korumalı İlk Retest Botu Aktif!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -143,7 +143,7 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# ==================== GRAFİK TABANLI SIRALI STRATEJİ ====================
+# ==================== EMA 50 KORUMALI İLK RETEST STRATEJİSİ ====================
 def check_retest_conditions(symbol, interval, market_type):
     base_url = BINANCE_SPOT_URL if market_type == "SPOT" else BINANCE_FUTURES_URL
     endpoint = "/api/v3/klines" if market_type == "SPOT" else "/fapi/v1/klines"
@@ -172,7 +172,6 @@ def check_retest_conditions(symbol, interval, market_type):
         df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
 
-        # Coin State Bilgisini Çekiyoruz
         saved_state = COIN_STATE_TRACKER.get(state_key, {"stage": "WAITING_FOR_CROSS", "pb_high": 0.0})
         stage = saved_state["stage"]
         pb_high = saved_state["pb_high"]
@@ -188,49 +187,44 @@ def check_retest_conditions(symbol, interval, market_type):
         prev_ema20 = df['EMA20'].iloc[-3]
         prev_ema50 = df['EMA50'].iloc[-3]
 
-        # Güvenlik: Trend tersine dönerse (Death Cross) her şeyi sıfırla
-        if current_ema20 < current_ema50:
+        # Temel Güvenlik: Death Cross olursa veya EMA 50 altında kapanış gelirse anında başa sar (Reset)
+        if current_ema20 < current_ema50 or curr_close < current_ema50:
             COIN_STATE_TRACKER[state_key] = {"stage": "WAITING_FOR_CROSS", "pb_high": 0.0}
             return False, 0, 0
 
-        # --- AŞAMA 1: KESİŞİM BEKLEME (+ İŞARETİ) ---
+        # --- AŞAMA 1: İLK KESİŞİM (GOLDEN CROSS) BEKLEME ---
         if stage == "WAITING_FOR_CROSS":
             is_cross = (prev_ema20 <= prev_ema50) and (current_ema20 > current_ema50)
-            if is_cross or (current_ema20 > current_ema50 and stage == "WAITING_FOR_CROSS"):
-                COIN_STATE_TRACKER[state_key] = {"stage": "WAITING_FOR_PULLBACK", "pb_high": 0.0}
+            if is_cross or (current_ema20 > current_ema50):
+                COIN_STATE_TRACKER[state_key] = {"stage": "WAITING_FOR_FIRST_PULLBACK", "pb_high": 0.0}
             return False, 0, 0
 
-        # --- AŞAMA 2: İLK GERİ ÇEKİLME (KIRMIZI MUM) BEKLEME ---
-        elif stage == "WAITING_FOR_PULLBACK":
+        # --- AŞAMA 2: İLK GERİ ÇEKİLME (EMA 20/50 ARASI KIRMIZI MUM) BEKLEME ---
+        elif stage == "WAITING_FOR_FIRST_PULLBACK":
             is_red = curr_close < curr_open
             in_ema_zone = (curr_low <= current_ema20) and (curr_close >= current_ema50)
             
             if is_red and in_ema_zone:
-                # İlk geri çekilme kırmızı mumu bulundu! Tepesi (high) kaydediliyor.
+                # İlk geri çekilme kırmızı mumu bulundu! Tepesini kaydedip kırılıma geçiyoruz.
                 COIN_STATE_TRACKER[state_key] = {"stage": "WAITING_FOR_BREAKOUT", "pb_high": curr_high}
             return False, 0, 0
 
-        # --- AŞAMA 3: KIRILIM VE SİNYAL (YEŞİL MUM KAPANIŞI) ---
+        # --- AŞAMA 3: KIRILIM VE SİNYAL (KIRMIZI MUMUN TEPESİNİ GEÇEN YEŞİL MUM) ---
         elif stage == "WAITING_FOR_BREAKOUT":
             is_green = curr_close > curr_open
             breaks_pullback = curr_close > pb_high
             valid_rsi = curr_rsi >= RSI_THRESHOLD
-            not_below_ema50 = curr_close >= current_ema50
 
-            if is_green and breaks_pullback and valid_rsi and not_below_ema50:
-                # KESİN SİNYAL! Sinyal veriliyor ve reset aşamasına kilitleniyor.
+            if is_green and breaks_pullback and valid_rsi:
+                # KESİN SİNYAL! Sinyal veriliyor ve trend sonuna kadar kilitleniyor.
                 COIN_STATE_TRACKER[state_key] = {"stage": "WAITING_FOR_RESET", "pb_high": 0.0}
                 return True, curr_close, curr_rsi
-            
-            # Fiyat EMA 50 altına sarkarsa senaryo iptal, başa sar
-            if curr_close < current_ema50:
-                COIN_STATE_TRACKER[state_key] = {"stage": "WAITING_FOR_CROSS", "pb_high": 0.0}
 
             return False, 0, 0
 
         # --- AŞAMA 4: SİNYAL SONRASI SIFIRLANMA (RESET) ---
         elif stage == "WAITING_FOR_RESET":
-            if current_ema20 < current_ema50:
+            if current_ema20 < current_ema50 or curr_close < current_ema50:
                 COIN_STATE_TRACKER[state_key] = {"stage": "WAITING_FOR_CROSS", "pb_high": 0.0}
             return False, 0, 0
 
@@ -264,12 +258,12 @@ def scan_market(pairs, interval):
             trade_link = f"https://www.binance.com/en/futures/{symbol}" if market_type == "FUTURES" else f"https://www.binance.com/en/trade/{symbol}"
 
             msg = (
-                f"🎯 *GRAFİK MODELİ RETEST GİRİŞİ*\n"
+                f"🎯 *EMA 50 KORUMALI İLK RETEST GİRİŞİ*\n"
                 f"⏱️ *Zaman Dilimi:* `{interval_label}`\n\n"
                 f"🪙 *Sembol:* #{symbol} `[{market_type}]`\n"
                 f"💵 *Fiyat:* `${price}`\n"
                 f"📈 *RSI ({RSI_PERIOD}):* `{rsi:.2f}`\n"
-                f"🕯️ *Mum Tipi:* `Kesişim -> İlk Kırmızı Retest -> Kırılım Yeşil Kapanış`\n"
+                f"🕯️ *Mum Tipi:* `Kesişim -> İlk EMA Arası Kırmızı Retest -> Tepe Kıran Yeşil Kapanış`\n"
                 f"{futures_info}\n"
                 f"💰 *24S Hacim:* `${volume_24h:,.2f}`\n"
                 f"🔗 [Binance {market_type.capitalize()} İşlem]({trade_link})"
@@ -282,7 +276,7 @@ def scan_market(pairs, interval):
 
 def run_scanner():
     now_str = get_tr_time()
-    print(f"[{now_str}] Grafik Modelli Tarama Başlatıldı...", flush=True)
+    print(f"[{now_str}] EMA 50 Korumalı Tarama Başlatıldı...", flush=True)
 
     spot_pairs = get_spot_usdt_pairs()
     spot_matches = scan_market(spot_pairs, SCAN_INTERVAL)
@@ -297,9 +291,9 @@ if __name__ == "__main__":
     time.sleep(2)
     label = INTERVAL_LABELS.get(SCAN_INTERVAL, SCAN_INTERVAL)
     send_telegram_msg(
-        f"🟢 *Grafik Modelli Retest Botu Aktif!*\n"
+        f"🟢 *EMA 50 Korumalı İlk Retest Botu Aktif!*\n"
         f"⏱️ *Zaman Dilimi:* `{label}`\n"
-        f"📊 *Adımlar:* `1. Kesişim -> 2. İlk Kırmızı Retest Mum Kaydı -> 3. Kırılım Yeşil Kapanış`"
+        f"📊 *Adımlar:* `1. Kesişim -> 2. İlk Kırmızı Retest (EMA 50 Altı Reset) -> 3. Tepe Kırılım Yeşil Kapanış`"
     )
 
     while True:
