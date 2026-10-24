@@ -30,7 +30,7 @@ def keep_alive():
 TELEGRAM_TOKEN = "8951230002:AAFPbwIJ1Ky-oKVg1b4rhSQ7W9LsTnrHJDs"
 CHAT_ID = "-1004481336360"
 
-SCAN_INTERVAL = "15m"       # Zaman Dilimi (15m veya 5m)
+SCAN_INTERVAL = "4H"       # Zaman Dilimi (15m veya 5m)
 RSI_THRESHOLD = 40.0      # Minimum RSI eşiği
 RSI_PERIOD = 14            # RSI periyodu
 MIN_24H_VOLUME_USDT = 10_000_000  # Minimum 24s Hacim (USDT)
